@@ -1,0 +1,55 @@
+inputDir = '.'#'../init'
+data = "maps/templateSubtractedDataSmeared.fits"
+weight = "weights.fits"
+band = 148.65
+
+submaps = [None]
+
+#Outputs
+outputDir = "."
+
+#Source Filtering
+signalTransform= None
+signalTransform1D = "/Users/heatherp/Documents/Testing_point_source_code_install/ptsrc-cat/ptsrc_cat/beams/beam_tform_140206_jitter_deep5_floats.txt"
+#signalTransform1D = "/home/mgralla/compactsources/data/beam_ar1_2013_131025.txt"
+signalTransform1DMaxEll = 24997
+#signalTransformModel = "csProfile.beam_file"
+#signalTransformModelMaxEll = 24997
+#signalTransformModelType = "trans"
+#signalTransformParameters = {'filename':"/home/mgralla/compactsources/data/beams_130224/beams_AR1_2009_jitter_130224_fixed.dat",'gaussConv':None,'rescale':149.0/148.65}
+noiseSpectrum = None
+extraFilter = None
+extraFilter1D = "/Users/heatherp/Documents/Testing_point_source_code_install/ptsrc-cat/ptsrc_cat/beams/highPass.dat"
+extraFilter1DMaxEll = 39997
+signalFWHM = None
+forceGaussian=False
+makeCleanTemplate = False
+verticalFilterHalfwidthEll = 0
+
+#Group Extraction
+objectType = 'sources' # sources or clusters
+snrThreshold = 2.8
+minPixPerGroup = 1.
+# detectionMask = [[310.2, 316., -1.6, 1.6], [328.5, 330.0, -1.4, -.1], [323.7, 325.5, -1.2, 1.55 ], \
+#                  [317.6, 319.1, 0., 1.6]]
+detectionMask = None
+rms = None # For snr
+excludeBorderPixels = 10
+
+#Source Catalog
+
+# Data map: (3.0123650000000168, 107.198161, -56.196208282420848, -49.008698766376469)
+# Spectrum submap coordinates: [11.999, 103.13, -55.262, -51.08]
+# Offsets: [ 8.988, -4.068, 0.934, -2.071 ]
+
+subcatalogOffsets = [ 8.988, -4.068, 0.934, -2.071 ]
+solidAngle = None
+fluxReconstructionWindowHalfWidth = 0.25
+finalCalibration = 1.0 # Uranus, updated for WMAP
+
+upgradePixelPitch = 4.
+
+writeSubmaps=False
+
+#Sim Catalog
+simCatalogNames = None

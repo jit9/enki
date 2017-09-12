@@ -1,0 +1,19 @@
+#!/bin/env python
+
+import catalog
+from flipper import *
+
+params = flipperDict.flipperDict()
+params.readFromFile(sys.argv[1])
+
+cats = []
+for f in params['catFiles']:
+    print f
+    cats.append( catalog.read(f) )
+
+mcat = catalog.mergeCatalogs(cats[0], params['shortNames'][0], cats[1], params['shortNames'][1], dist = 2)
+
+mcat.write(params['mergedCatName'])
+mcat.writeASCII("%s.ascii" % params['mergedCatName'])
+mcat.writeRegionFile("%s.reg" % params['mergedCatName'])
+

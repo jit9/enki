@@ -1,0 +1,197 @@
+#!/bin/env python
+
+
+from pylab import *
+from scipy import *
+from numpy import *
+from mpfit import mpfit
+from flipper import *
+import catalog
+
+params = flipperDict.flipperDict()
+params.readFromFile(sys.argv[1])              # uses calculateSEDs.dict
+
+try: 
+     cat = catalog.readFromASCIIFile(params['master_cat'])
+except:
+     cat = catalog.readFromPickleFile(params['master_cat'])
+
+
+## Constants:
+
+c = 3.e8                                      # m/s
+mJy2Jy = 1.e-3
+h2deg = 360./24.
+m2h = 1./60.
+s2h = 1./3600.
+arcmin2deg = m2h
+arcsec2deg = s2h
+ghz2hz = 10.e9
+
+##    Flags:
+
+silent = False
+
+
+ACT_ids = []
+fluxes = []
+count = 0
+
+## To do: read through each line of cat, if base_cat = true and flux value
+##        isn't default, append the flux trio, and do so for each other 
+##        col to use if val isn't the default.
+##        also, want some identifier for the sources at some point
+## Note: cat matching goes into master cat, don't need to deal with it here
+
+
+for line in cat:
+    if '#' in line:
+        print 'header'
+        continue
+
+    flux_trio = []
+
+    NO_BASE_VAL = False
+    DONT_USE = False
+    for col in params['master_cat_cols'].keys():
+	if params['master_cat_cols'][col]['use'] == False:
+	    continue
+	else:
+	    if line[col]== cat.cols[col]['default']:
+		continue
+	    else:
+		if line[params['master_cat_cols'][col]['error']]== cat.cols[params['master_cat_cols'][col]['error']]['default']:
+			DONT_USE = True
+			continue
+		else:
+	        	frequency = params['master_cat_cols'][col]['frequency'] * ghz2hz
+	    		flux = line[col] * params['master_cat_cols'][col]['flux_scale']
+	    		flux_err = line[params['master_cat_cols'][col]['error']]* params['master_cat_cols'][col]['flux_scale']
+	    		flux_trio.append([frequency, flux, flux_err])
+	if params['master_cat_cols'][col]['is_base_cat'] == True:
+	    if ((line[col] == cat.cols[col]['default'])+(line[params['master_cat_cols'][col]['error']]== cat.cols[params['master_cat_cols'][col]['error']]['default'])):
+	       NO_BASE_VAL = True
+		
+    if NO_BASE_VAL == True:
+	continue
+
+    if DONT_USE == True:
+	continue
+
+    fluxes.append(flux_trio)
+    ACT_ids.append(line['id'])
+    #print line['id'], flux_trio
+    count += 1
+
+
+if (silent == False):
+    print 'count', count
+
+
+print 'ACT_ids:', ACT_ids
+
+##    Order flux trios by frequency for each source:
+
+
+fluxes_SED = []
+
+for x in fluxes:
+    ordered_freq = sorted(x,key=lambda x:[x[0],x[1],x[2]])
+    fluxes_SED.append(ordered_freq)
+
+
+
+##    Fit for alpha (spectral index):
+
+
+alpha = []
+Amp = []
+
+def spectra(x,A,a):
+    return A * pow(x,a)
+
+def mpfitfun(x,y,err):
+        if err == None:
+            def f(p, fjac=None): return [0,(y-spectra(x,*p))]
+        else:
+            def f(p, fjac=None): return [0,(y-spectra(x,*p))/err]
+        return f
+
+
+for i in range(len(fluxes_SED)):
+
+    if len(fluxes_SED[i]) <= 1: 
+        alpha.append(-999.00)
+        Amp.append(-999.00)
+        #print i, ACT_ids[i]
+        #print zip(*fluxes_SED[i])[1]
+    else:
+	#print i, len(fluxes_SED), ACT_ids[i], len(fluxes_SED[i])
+        print zip(*fluxes_SED[i])[1]
+        freqs = array(zip(*fluxes_SED[i])[0])
+        fluxs = array(zip(*fluxes_SED[i])[1])
+        flux_errs = array(zip(*fluxes_SED[i])[2])
+        check_alpha = (log10(fluxs[1]/fluxs[0]))/(log10(freqs[1]/freqs[0]))
+
+        #print i, len(fluxes_SED), ACT_ids[i], len(fluxes_SED[i]), freqs, fluxs, flux_errs, check_alpha
+        params=[0.5,0.0]
+
+        fixed=[False,False]
+        limitedmin = [False,False]
+        limitedmax = [False,False]
+        minpars=[0,0]
+        maxpars=[0,0]
+        quiet=True
+        shh=False
+
+        parinfo = [ {'n':0,'value':params[0],'limits':[minpars[0],maxpars[0]],'limited':[limitedmin[0],limitedmax[0]],'fixed':fixed[0],'parname':"Amplitude",'error':0} , {'n':1,'value':params[1],'limits':[minpars[1],maxpars[1]],'limited':[limitedmin[1],limitedmax[1]],'fixed':fixed[1],'parname':"Power (alpha)",'error':0}]
+
+        m = mpfit(mpfitfun(freqs,fluxs,flux_errs), parinfo=parinfo, quiet=quiet)
+        mpp = m.params                                #The fit params
+        #print mpp
+        mpperr = m.perror
+        chi2 = m.fnorm
+
+        if not shh:
+            for j,p in enumerate(mpp):
+                parinfo[j]['value'] = p
+                #print parinfo[j]['parname'],p," +/- ",mpperr[j]
+                if j==0: Amp.append(p)
+                if j==1: alpha.append(p)
+            #print "Chi2: ",chi2," Reduced Chi2: ",chi2/len(fluxs)," DOF:",len(fluxs)-len(mpp)
+
+
+print ACT_ids
+print alpha
+
+# Make histogram plot of alphas (spectral indices):
+
+
+alpha = array(alpha)
+condition = where(alpha[:] > -999.0)
+
+
+new_array = alpha[condition]
+values = sort(new_array)
+
+##scoreatpercentile in scipy -> can find on ishmael in /scr2/users/marriage/scipy-0.6.0/scipy/stats/stats.py
+
+q = [25 /100. * (len(values) - 1), 50 /100. * (len(values) - 1), 75 /100. * (len(values) - 1), 100 /100. * (len(values) - 1)]
+print 'quartiles: '
+for idx in q:
+    if (idx % 1 == 0):
+        print values[idx], idx, 'first'
+    else:
+        print values[int(idx)] + (values[int(idx) + 1] - values[int(idx)])*(idx % 1), idx
+
+
+hist(alpha[condition], bins=40, rwidth=1.0, facecolor='#aaaaaa')
+xticks(fontsize='large')
+yticks(fontsize='large')
+xlabel('Spectral Index', fontsize='x-large', fontstyle='italic')
+ylabel('Number of Sources', fontsize='x-large', rotation='vertical', fontstyle='italic')
+savefig('alpha_histat5G-148G.eps')
+close()
+
+
+## Took plots out

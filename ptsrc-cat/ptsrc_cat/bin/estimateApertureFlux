@@ -1,0 +1,106 @@
+#!/bin/env python
+
+from flipper import *
+import catalog, csFilter
+import pickle
+
+params = flipperDict.flipperDict()
+params.readFromFile(sys.argv[1])
+
+bins = params['bins']
+    
+# Read in map in Jy/sr
+m = liteMap.liteMapFromFits(params['map'])
+
+
+#list of targets
+try:
+    cat = catalog.readFromPickleFile(params['catalog'])
+except:
+    try:
+        cat = catalog.readFromASCIIFile(params['catalog'])
+    except:
+        raise InputError("Could not read in catalog specified in param file")
+if params['sortBy'] != None:
+    cat.sortBy(params['sortBy'])
+    if params['reverseSort']:
+        cat.reverse()
+
+#Associated errors: run estimateProfileErrors
+try:
+    f = file("error.pickle")
+except:
+    raise RuntimeError("Need profileErrors.pickle: run estimateProfileErrors first.")
+errors = pickle.load(f)
+f.close()
+
+if not os.path.exists('submapsRaw'):
+    os.makedirs('submapsRaw')
+if not os.path.exists('submaps'):
+    os.makedirs('submaps')
+if not os.path.exists('images'):
+    os.makedirs('images')
+
+sourceFile = file("fluxes.txt", 'w')
+
+ratios = []
+ratio_errs = []
+
+if params['sources'] == None:
+    sources = range(len(cat))
+else:
+    sources = params['sources'] 
+for source in sources:
+    ra, dec = catalog.getDecimalRADecFromRow(cat[source])
+    cosdec = numpy.cos(dec*numpy.pi/180.)
+    ra_s, dec_s = catalog.convertRADecDegreesToSexagesimal( ra, dec )
+    tup = ra_s + dec_s
+    iau_name = "ACT_J%02d%02d%02d%+03d%02d%02d" % tup
+    print "Processing %s" % iau_name 
+    decDiff = 100.
+    for _dec in errors.keys():
+        diff = abs(dec-_dec)
+        if diff < decDiff:
+            decDiff = diff 
+            errDec  = _dec
+            err = errors[_dec]
+    print "  Error dec: %0.1f" % errDec
+
+    #run sims to get standard deviations
+
+    halfwidth = params['submapHalfwidth']
+    print ra-halfwidth/cosdec, ra+halfwidth/cosdec
+    sm = m.selectSubMap( ra-halfwidth/cosdec, ra+halfwidth/cosdec, dec-halfwidth, dec+halfwidth, safe=True )
+    print sm.x1, sm.x0, sm.y0, sm.y1, sm.Nx, sm.Ny
+    
+    sm.writeFits("submapsRaw/%s.fits" % iau_name, overWrite = True)
+    bg = csFilter.estimateBG(sm, ra, dec, params['backgoundEstRadius'])
+    sm.data -= bg.data
+    #sm = liteMap.upgradePixelPitch(sm,3)
+    sm.writeFits("submaps/%s.fits" % iau_name, overWrite = True)
+
+    rad = liteMap.getRadiusAboutPoint(sm, ra, dec)
+    inds = numpy.where(rad < params['aperatureRadius'])
+    flux = sm.data[inds].sum() * sm.pixScaleX * sm.pixScaleY
+
+    if params['catalogFluxField'] != None:
+        catflux = cat[source][params['catalogFluxField']]
+        line = iau_name + "  %02d:%02d:%02d %+03d:%02d:%02d %15e %15e %15e %15e %15e\n" %  \
+                (ra_s + dec_s +(flux, err, catflux, flux/catflux, abs(err/catflux)))
+        ratios.append(flux/catflux)
+        ratio_errs.append(abs(err/catflux))
+    else:
+        line = iau_name + "  %02d:%02d:%02d %+03d:%02d:%02d %15e %15e\n" %  \
+                (ra_s + dec_s +(flux, err))
+
+    sourceFile.write(line)
+
+sourceFile.close()
+
+if params['catalogFluxField'] != None:
+    ratios = numpy.array(ratios)
+    ratio_errs = numpy.array(ratio_errs)
+    print "Ratio Mean: %e" % ((ratios/ratio_errs**2).sum()*1/((ratio_errs**-2).sum()))
+    print "Ratio StDev on the Mean: %e" % numpy.sqrt(1/((ratio_errs**-2).sum()))
+    pylab.hist(ratios)
+    pylab.savefig("images/fluxRecoveryRatio.png")

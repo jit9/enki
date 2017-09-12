@@ -1,0 +1,197 @@
+#!/bin/env python
+import matplotlib
+matplotlib.use('Agg')
+from flipper import *
+import catalog
+import csFilter
+import csProfile
+
+import sys
+import multiprocessing as mp
+
+paramFile = sys.argv[1]
+params = flipperDict.flipperDict()
+params.readFromFile(paramFile)
+
+cat = catalog.read(params['catalog'])
+
+if not os.path.exists(params['outputdir']):
+    os.makedirs(params['outputdir'])
+
+sm = liteMap.liteMapFromFits(params['templateMap'])
+
+if  'keepOriginalData' in params and params['keepOriginalData'] == True:
+    pass
+else:
+    sm.data[:] = 0.0
+
+hw = params['hw']
+ra0,dec0 = sm.pixToSky(sm.Nx/2, sm.Ny/2)
+cosdec = numpy.cos(dec0 * numpy.pi/180.)
+st = sm.selectSubMap(ra0 - hw/cosdec, ra0 + hw/cosdec, dec0 - hw, dec0 + hw)
+st = liteMap.upgradePixelPitch(st, N=params['pixelPitchUpgradeFactor'])
+pixarea = st.pixScaleX*st.pixScaleY
+weight  = sm.copy()
+weightTot  = sm.copy()
+scratch = sm.copy()
+
+#create Templates
+templateDict = params['templates']
+for key in templateDict.keys():
+    if 'file' in templateDict[key].keys():
+        f = file(templateDict[key]['file'])
+        ell=[]
+        wl = []
+        for line in f:
+            fields = line[:-1].split()
+            ell.append(float(fields[0]))
+            wl.append(float(fields[1]))
+    templateDict[key] = csFilter.makeTemplate( st, wl, ell, templateDict[key]['maxEll'] )
+
+def downgrade( fine, rough, weight ):
+
+    t = time.time()
+
+#Amazingly the following vectorized code is the same speed as the for-loop below
+#     y,x = numpy.indices(fine.data.shape)
+#     x = x.ravel()
+#     y = y.ravel()
+#     radec = numpy.array(fine.pixToSky(x,y))
+#     r_xy = numpy.array(rough.skyToPix(radec[:,0], radec[:,1]))
+#     r_xy = numpy.array(numpy.round(r_xy), dtype=int)
+#     rough.data[r_xy[:,1], r_xy[:,0]] += fine.data[y,x]
+#     print time.time()-t
+
+    for x in xrange(fine.Nx):
+        for y in xrange(fine.Ny):
+            ra, dec = fine.pixToSky(x,y)
+            rx, ry = rough.skyToPix(ra,dec)
+            rx = int(rx+.5)
+            ry = int(ry+.5)
+            if rx < 0 or ry < 0 or rx >= rough.Nx or ry >= rough.Ny:
+                continue
+            rough.data[ry][rx] += fine.data[y,x]
+            weight.data[ry][rx] += 1.
+    print "before deweighting"
+    inds = numpy.where(weight.data > 0)
+    rough.data[inds] /= weight.data[inds]
+    print time.time() - t
+
+stt = st.copy()
+
+def doTemplate(catQueue,sumQueue):
+    while True:
+        st = stt.copy()
+        scratch = sm.copy()
+        weight = sm.copy()
+        if catQueue.empty():
+            # This worker is done.
+            print("Killing extraneous worker.")
+            break
+        i, row = catQueue.get()
+        print "Processing %d/%d at (%.1f, %.1f)" % ( i, len(cat), row['ra'], row['dec'] )
+
+        if params['catTemplateKey'] != None:
+            beam = templateDict[row[params['catTemplateKey']]].copy()
+        else:
+            beam = templateDict['all'].copy()
+
+        print 'beam max', beam.data.max()
+        x,y = st.skyToPix(row['ra'], row['dec'])
+        st.wcs.header['CRPIX1'] -= x - st.Nx/2
+        st.wcs.header['CRPIX2'] -= y - st.Ny/2
+        st.wcs.header['CRPIX1'] = numpy.round(st.wcs.header['CRPIX1'])
+        st.wcs.header['CRPIX2'] = numpy.round(st.wcs.header['CRPIX2'])
+        st.wcs.updateFromHeader()
+        print st.pixToSky(st.Ny/2, st.Nx/2)
+        print st.data.shape
+        print "cards", st.wcs.header['NAXIS1'], st.wcs.header['NAXIS2'], st.wcs.header['CRPIX1'], \
+            st.wcs.header['CRPIX2'], st.wcs.header['PV2_1']
+        x,y = st.skyToPix(row['ra'], row['dec'])
+        if 'fluxMultiplier' in params and params['fluxMultiplier'] != None:
+            if fluxField != None:
+                st.data[y,x] = row[fluxField]/pixarea*params['fluxMultiplier'] 
+            else:
+                st.data[y,x] = params['fluxMultiplier']
+        else:
+            if fluxField != None:
+                st.data[y,x] = row[fluxField]/pixarea 
+            else:
+                st.data[y,x] = 1.
+        if 'model' in params.keys() and params['model'] != None:
+            row_modelParams = {}
+            for par in params['modelParameters'].keys():
+                if 'cat' in str(params['modelParameters'][par]):
+                    row_modelParams[par] = row[(params['modelParameters'][par]).split('.')[-1]]
+                else:
+                    row_modelParams[par] = params['modelParameters'][par]
+            rad = liteMap.getRadiusAboutPoint(st,row['ra'], row['dec'])*60. # arcmin
+            print rad
+            model = eval(params['model'])
+            st.data[:] =  model(rad, **row_modelParams)[:]
+            print 'Flux =', st.data.sum()*st.pixScaleY*st.pixScaleX
+            print 'Peak Brightness =', st.data.min()
+        if 'outputSourceThumbnails' in params and params['outputSourceThumbnails']:
+            if not os.path.exists('%s/thumbnailsWithoutBeam'% params['outputdir']):
+                os.makedirs('%s/thumbnailsWithoutBeam'% params['outputdir'])
+            st.writeFits("%s/thumbnailsWithoutBeam/beamOut_%.4f_%.4f.fits" % (params['outputdir'], row['ra'], row['dec']), \
+                            overWrite=True)
+        ft = numpy.fft.fft2(st.data)
+        ft *= beam.data
+        st.data = numpy.real(numpy.fft.ifft2(ft))
+        if 'outputSourceThumbnails' in params and params['outputSourceThumbnails']:
+            if not os.path.exists('%s/thumbnailsWithBeam'% params['outputdir']):
+                os.makedirs('%s/thumbnailsWithBeam'% params['outputdir'])
+            st.writeFits("%s/thumbnailsWithBeam/beamOut_%.4f_%.4f.fits" % (params['outputdir'],row['ra'], row['dec']), 
+                    overWrite=True)
+        print "Solid Angle After Beam Convolution", st.data.sum()*st.pixScaleX*st.pixScaleY
+        print "max", st.data.min()
+        print "downgrading"
+        downgrade(st, scratch, weight )
+        print "done"
+        print "rough pix integral", scratch.data.sum()*scratch.pixScaleX*scratch.pixScaleY
+        sumQueue.put((scratch.data.copy(), weight.data.copy()))
+
+def summer(sumQueue):
+    i = 0.
+    while True:
+        scratch,weight = sumQueue.get()
+        sm.data += scratch
+        weightTot.data += weight
+        del scratch,weight
+        i += 1
+        if i==len(cat):
+            break
+    sm.writeFits(params['outputFilename'], overWrite=True)
+    
+
+if params['fluxField']:
+    fluxField = params['fluxField']
+elif 'val_flux' in cat[0].keys():
+    fluxField = 'val_flux'
+else:
+    fluxField = None
+
+if (not 'nThreads' in params.keys()):
+    nthreads = 1
+else:
+    nthreads = params['nThreads']
+    # Mute output to prevent locks and confusion
+    class Muted(object):
+        def write(self,message):
+            pass
+        def flush(self):
+            pass
+    sys.stdout = Muted()
+
+catalogQueue = mp.Queue()
+summingQueue = mp.Queue() #So we don't have to have everything in memory at once
+
+for i,row in enumerate(cat):
+    catalogQueue.put((i,row))
+
+# Start processes
+mp.Process(target=summer, args=(summingQueue,)).start()
+for i in range(nthreads):
+    mp.Process(target=doTemplate, args=(catalogQueue,summingQueue)).start()
+

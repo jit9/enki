@@ -1,0 +1,93 @@
+#!/bin/env python
+
+from flipper import *
+import catalog
+
+params = flipperDict.flipperDict()
+params.readFromFile(sys.argv[1])
+
+if params['catalogPickle'] != None:
+    cat = catalog.readFromPickleFile((params['catalogPickle']))
+elif params['catalogASCII'] != None:
+    cat = catalog.readFromASCIIFile ((params['catalogASCII']))
+else: 
+    raise ValueError('Please specify a catalog in %s' % sys.argv[1])
+
+
+
+w = liteMap.liteMapFromFits(params['weight'])
+#if not 'integration_time' in cat.cols.keys() :
+if True:
+    w.data *= params['weightMultiplier']
+    for row in cat:
+        if row['ra'] != cat.cols['ra']['default']:
+            continue
+        x,y = w.skyToPix(row['sim_ra'], row['sim_dec'])
+        row['integration_time'] = w.data[y,x]
+
+#XXX This should be corrected in the noise maps
+rows2remove = []
+for exclusion in params['exclusions']:
+    for row in cat:
+        x,y = w.skyToPix(row['ra'], row['dec'])
+        dist = ( (x - exclusion[0])**2 + (y-exclusion[1])**2 )**0.5
+        if dist < 10:
+            rows2remove.append(row)
+            print "Found Exclusion at ", exclusion, x,y, row['ra'], row['dec']
+
+for row in rows2remove:
+    print "removing source at", row['ra'], row['dec']
+    cat.remove(row)
+
+for selection in params['selections']:
+    cat = cat.select(selection[0], selection[1])
+
+detectedCat = cat.select('ra', lambda x: x != cat.cols['ra']['default'])
+undetectedCat = cat.select('ra', lambda x: x == cat.cols['ra']['default'])
+falseDetectionsCat = detectedCat.select('matched', lambda x: x == 'N' )
+trueDetectionsCat  = detectedCat.select('matched', lambda x: x == 'Y' )
+
+undetectedCat.writeASCII("undetected.txt")
+falseDetectionsCat.writeASCII("falseDetections.txt")
+trueDetectionsCat.writeASCII("trueDetections.txt")
+
+undetectedCat.writeRegionFile("undetected.reg", raCol= 'sim_ra', decCol = 'sim_dec')
+falseDetectionsCat.writeRegionFile("falseDetections.reg")
+trueDetectionsCat.writeRegionFile("trueDetections.reg")
+
+print "Total sources in downselected catalog: ", len(cat)
+print "Total true detections :", len(trueDetectionsCat)
+print "Total undetected      :", len(undetectedCat)
+print "Total false detections:", len(falseDetectionsCat)
+print "Overall completeness  :", float(len(trueDetectionsCat))/(len(undetectedCat)+len(trueDetectionsCat))
+print "Overall purity        :", float(len(trueDetectionsCat))/(len(falseDetectionsCat)+len(trueDetectionsCat))
+
+ndetTrue = []
+ndetFalse = []
+nundet   = []
+purity = []
+completeness = []
+
+for bin in params['fluxBins']:
+    fd = len(falseDetectionsCat.select( 'val_flux', lambda x: 1000*x >= bin[0] and 1000*x < bin[1] ))
+    td = len(trueDetectionsCat.select( 'val_flux', lambda x: 1000*x >= bin[0] and 1000*x < bin[1] ))
+    ud = len(undetectedCat.select( 'sim_val', lambda x: x >= bin[0] and x < bin[1] ))
+    ndetTrue.append(td)
+    ndetFalse.append(fd)
+    nundet.append(ud)
+    if td+fd >0:
+        purity.append(float(td)/(td+fd))
+    else:
+        purity.append(-1.0)
+    if td+ud > 0: 
+        completeness.append(float(td)/(td+ud))
+    else:
+        completeness.append(-1.0)
+
+f = file("purityAndCompleteness.txt", 'w')
+f.write('bins             = %s\n' % str( params['fluxBins']))
+f.write('true_detections  = %s\n' % str( ndetTrue))
+f.write('false_detections = %s\n' % str(ndetFalse))
+f.write('undetected       = %s\n' % str(nundet))
+f.write('purity           = %s\n' % str(purity))
+f.write('completeness     = %s\n' % str(completeness))

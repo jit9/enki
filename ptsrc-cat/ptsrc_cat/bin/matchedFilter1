@@ -1,0 +1,63 @@
+#!/bin/env python
+
+from astLib import astWCS
+from flipper import *
+import csFilter1
+from scipy.ndimage.fourier import fourier_gaussian
+
+paramFile = sys.argv[1]
+params = flipperDict.flipperDict(paramFile)
+params.readFromFile(paramFile)
+
+fout = file('matchedFilter1.stats', 'w')
+
+mapDir = "maps"
+if not os.path.exists(mapDir):
+    os.makedirs(mapDir)
+
+thumbnailDir = "%s/thumbnails" % mapDir
+if not os.path.exists(thumbnailDir):
+    os.makedirs(thumbnailDir)
+
+##############################################################
+# Read in the data
+
+if 'inputDir' in params and not params['inputDir'] in [None,'']:
+    data = liteMap.liteMapFromFits("%s/%s" % (params['inputDir'], params['data']))
+else:
+    data = liteMap.liteMapFromFits( params['data'] )
+pixArea = data.pixScaleX*data.pixScaleY
+zeromap = data.copy()
+zeromap.data[:] = 0.
+
+#For the matched filter: read in a signal transform
+print "  Getting signal transform"
+f = file(params["signalTransform1D"])
+ell=[]
+wl = []
+for line in f:
+  fields = line[:-1].split()
+  ell.append(float(fields[0]))
+  wl.append(float(fields[1]))
+#Assumes ft of signal is normalized to unity
+m = csFilter1.makeTemplate(zeromap, wl, ell, params["signalTransform1DMaxEll"])
+m.data /= m.data.sum()/m.Nx/m.Ny #renormalize such that spatial profile is unit normalized
+signalTransform = m.data
+m.writeFits("maps/signalTransform.fits", overWrite = True)
+
+##############################################################
+# Filter map 
+
+print "Finding sources"
+
+mapToFilter = data.copy()
+suffix = ""
+fmn = "%s/filtered%s.fits" % (mapDir, suffix)
+
+if not os.path.exists( fmn ):
+            
+    filteredMap = csFilter1.optimalFilter(mapToFilter, signalTransform = signalTransform)
+    filteredMap.writeFits( "%s/filteredWeighted%s.fits" % (mapDir, suffix), overWrite=True )
+    filteredMap.writeFits( fmn, overWrite=True )
+       
+fout.close()

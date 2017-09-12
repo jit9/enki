@@ -1,0 +1,15 @@
+dataDir = "./"
+
+calibration = [1.0, 1.0, 1.0, 1.0]
+     
+mapFiles = ["set0_added_I.fits",\
+	       "set1_added_I.fits",\
+	       "set2_added_I.fits",\
+	       "set3_added_I.fits",]
+
+weightFiles = ["deep56_null_perscanpattern_S2_c7v5_AR2_night_nomoon_srcsub_srcpoint_noisecut_fixpickupcut_noturn_debuddyperdet_4way_set0_2pass_weights_I.fits",\
+	       "deep56_null_perscanpattern_S2_c7v5_AR2_night_nomoon_srcsub_srcpoint_noisecut_fixpickupcut_noturn_debuddyperdet_4way_set1_2pass_weights_I.fits",\
+	       "deep56_null_perscanpattern_S2_c7v5_AR2_night_nomoon_srcsub_srcpoint_noisecut_fixpickupcut_noturn_debuddyperdet_4way_set2_2pass_weights_I.fits",\
+	       "deep56_null_perscanpattern_S2_c7v5_AR2_night_nomoon_srcsub_srcpoint_noisecut_fixpickupcut_noturn_debuddyperdet_4way_set3_2pass_weights_I.fits",]
+
+output = "coadd"

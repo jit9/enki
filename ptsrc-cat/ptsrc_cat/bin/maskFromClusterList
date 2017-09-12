@@ -1,0 +1,21 @@
+#!/bin/env python
+
+from flipper import *
+from optimalFilter import *
+import cluster
+import catalog
+
+paramFile = sys.argv[1]
+params = flipperDict.flipperDict(paramFile)
+params.readFromFile(paramFile)
+
+mp = liteMap.liteMapFromFits(params["mapFile"])
+if params['submap'] != None:
+    smp = mp.selectSubMap(*params['submap'])
+else:
+    smp = mp
+cl = cluster.clusterList()
+cl.read(params["clusterPickle"])
+cl.inPaintOverClusters(smp, supermap = mp)
+
+smp.writeFits("masked.fits", overWrite=True)

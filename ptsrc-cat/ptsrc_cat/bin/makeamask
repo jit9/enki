@@ -1,0 +1,53 @@
+#!/bin/env python
+
+import os
+from flipper import *
+import catalog
+
+paramFile = sys.argv[1]
+params = flipperDict.flipperDict()
+params.readFromFile(paramFile)
+
+if not os.path.exists(params['outputdir']):
+    os.makedirs(params['outputdir'])
+
+m = liteMap.liteMapFromFits(params['map']) # first read in a map
+
+mask = m.copy()
+mask.data[:]= 1.0
+
+cat = catalog.read(params['catalog'])
+
+x = range(0, m.Nx)
+y = range(0, m.Ny)
+xx, yy = numpy.meshgrid(x,y)
+
+rad = params['holeRadiusArcmin']/60.*numpy.pi/180.
+rad_npix = rad/m.pixScaleY
+print "rad-npix", rad_npix
+
+fluxCut = params['fluxCut']
+# submap = [11.999, 103.13, -55.262, -51.08]
+for fc in fluxCut:
+    i=0
+    j=0
+    mask.data[:] = 1.
+    for row in cat:
+        if row['val_flux'] < fc:
+            continue
+        i+=1
+#         if row['ra'] > submap[0] and row['ra'] < submap[1] and \
+#                 row['dec'] > submap[2] and row['dec'] < submap[3]:
+#                     j+=1
+#                     print row['ra'], row['dec']
+        centX, centY = m.skyToPix(row['ra'], row['dec'])
+        for x in numpy.arange(centX - (rad_npix+3), centX + rad_npix+3):
+            for y in numpy.arange(centY - (rad_npix+3), centY + rad_npix+3):
+                dist = float((centX-x)**2+(centY-y)**2)**.5
+                if dist > rad_npix:
+                    continue
+                mask.data[y,x] = 0.
+    print fc, "Total Holes:", i
+    print fc, "Total Holes in submap:", j
+    mask.writeFits("%s/mask_%05.2farcmin_%0.3fJy.fits" % (params['outputdir'], params['holeRadiusArcmin'], fc), overWrite = True)
+     

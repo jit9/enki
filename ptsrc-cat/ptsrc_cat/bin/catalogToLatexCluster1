@@ -1,0 +1,105 @@
+#!/bin/env python
+
+from flipper import *
+import catalog
+
+params = flipperDict.flipperDict()
+params.readFromFile(sys.argv[1])
+
+if params['catalogPickle'] != None:
+    cat = catalog.readFromPickleFile(params['catalogPickle'])
+elif params['catalogASCII']  != None:
+    cat = catalog.readFromASCII(params['catalogASCII'])
+
+#
+# Make the table
+#
+
+
+print "Creating table"
+
+cat.sortBy('snr')
+cat.reverse()
+format = {'id': '%s', 'ra_s': '%s', 'dec_s': '%s', '148 GHz Flux':'%.1f', '148 GHz Flux':'%.1f', \
+        'integration_time': "%.1f", 'ATG20_IAUname':"%s", 'flux_db':"%.1f", 'snr':"%4.1f", 'scale':"%.2f", 'conf_redshift': "%s"}
+#colNames = ['id', 'ra', 'dec', 'snr', 'scale', 'val', 'val_deconv' , 'compton_y_deconv', 'conf_label']
+colNames = ['id', 'ra', 'dec', 'snr', 'scale', 'val', 'val_deconv' , 'compton_y_deconv', 'conf_redshift', 'conf_label']
+tableFile = file(params['output'],   'w')
+
+for row in cat:
+    if row['snr'] < 6.0:
+        continue
+    for colName in colNames:
+        if colName == 'conf_redshift':
+            if row['conf_redshift'] == '-----':
+                tableFile.write(" ... ")
+            else:
+                tableFile.write(" %.02f " % row['conf_redshift'])
+        elif colName == 'ra':
+            ra = row[colName]
+            if ra < 0:
+                ra += 360.
+            hr = int(ra/15.)
+            minsec = numpy.mod(ra,15.)/15.*60
+            min = int(minsec)
+            sec = int(numpy.mod(minsec,1.)*60)
+            tableFile.write(" %02d:%02d:%02d " % (hr,min,sec))
+        elif colName == 'dec':
+            dec = row[colName]
+            hr = int(dec)
+            minsec = numpy.mod(abs(dec),1.)*60
+            min = int(minsec)
+            sec = int(numpy.mod(minsec,1.)*60)
+            tableFile.write(" $%02d$:%02d:%02d " % (hr,min,sec))
+        elif colName == 'id':
+            prefix,coord= row['id'].split()
+            ra, dec = coord.split('-')
+            tableFile.write(row['conf_Name'])
+        elif colName == 'val':
+            conv = 1./393426103.75670761*1e6
+            tableFile.write(" $ %.0f \pm %.0f $ " % \
+                        (-row['val']*conv, row['val']*conv * (1./row['snr']) ))
+        elif colName == 'val_deconv':
+            conv = 1./393426103.75670761*1e6
+            if True:
+                tableFile.write("$ %.0f \pm %.0f$ & $(%.0f) $" % \
+                        (-row['val_deconv']*conv, row['val_deconv_err'] *conv, row['val_deconv_err_from_scale']*conv))
+            else:
+                if row['scale'] >0.5 and row['scale'] < 2.:
+                    tableFile.write("$ %.0f \pm %.0f $" % \
+                        (-row['val_deconv']*conv, row['val_deconv'] *conv* (.1+1./row['snr']) ))
+                else:
+                    tableFile.write(" ... ")
+        elif colName == 'compton_y_deconv':
+            if True:
+                tableFile.write("$ %.2f \pm %.2f$ & $(%.2f) $ " % \
+                    (1e4*row['compton_y_deconv'], 1e4*row['compton_y_deconv_err'], 1e4*row['compton_y_deconv_err_from_scale']  ) )
+            else:
+                if row['scale'] >0.5 and row['scale'] < 2.: 
+                    tableFile.write("$ %.2f \pm %.2f $ " % \
+                        (1e4*row['compton_y_deconv'], 1e4*row['compton_y_deconv'] * (.1+1./row['snr']) ) )
+                else:
+                    tableFile.write(" ... ")
+        elif colName == 'conf_label':
+            if row['conf_label'] =="":
+                tableFile.write(" -- ")
+            else:
+                tableFile.write(row['conf_label'].replace('_', ' '))
+        elif colName == 'SUMSS_val':
+            if row[colName] == cat.cols[colName]['default']:
+                tableFile.write(" -- ")
+            else:
+                tableFile.write(" %.0f $\pm$ %.0f " % (row[colName], row['SUMSS_err']) )
+        elif colName == 'PMN_val':
+            if row[colName] == cat.cols[colName]['default']:
+                tableFile.write(" -- ")
+            else:
+                tableFile.write(" %.0f $\pm$ %.0f " % (row[colName], row['PMN_err']) )
+        else:
+            fmt = " %s " % format[colName]
+            tableFile.write( fmt % (row[colName]) )
+        if colName == colNames[-1]:
+            tableFile.write(" \\\\ \n"  )
+        else:
+            tableFile.write(" & " )
+tableFile.close()

@@ -1,0 +1,22 @@
+#!/bin/env python
+
+from flipper import *
+import catalog
+
+params = flipperDict.flipperDict()
+params.readFromFile(sys.argv[1])
+
+if params['catalogPickle'] != None:
+    cat = catalog.readFromPickleFile(params['catalogPickle'])
+elif params['catalogASCII'] != None:
+    cat = catalog.readFromASCIIFile ((params['catalogASCII']))
+else: 
+    raise ValueError('Please specify a catalog in %s' % sys.argv[1])
+
+for selection in params['selections']: 
+    cat = cat.select(selection[0], selection[1])
+
+cat.writeASCII("%s.txt" % params['output'])
+cat.write("%s.pickle" % params['output'])
+cat.writeRegionFile("%s.reg" % params['output'])
+

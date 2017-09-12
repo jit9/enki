@@ -1,0 +1,29 @@
+#!/bin/env python
+
+from flipper import *
+import catalog
+
+params = flipperDict.flipperDict()
+params.readFromFile(sys.argv[1])
+
+if params['catalogPickle'] != None:
+    cat = catalog.readFromPickleFile((params['catalogPickle']))
+elif params['catalogASCII'] != None:
+    cat = catalog.readFromASCIIFile ((params['catalogASCII']))
+else: 
+    raise ValueError('Please specify a catalog in %s' % sys.argv[1])
+
+for selection in params['selections']:
+    cat = cat.select(selection[0], selection[1])
+
+fluxField = params['fluxField']
+
+dnds = []
+for bin in params['fluxBins']:
+    dnds.append(len(cat.select( fluxField, lambda x: x >= bin[0] and x < bin[1] )))
+
+f = file("dNdS.txt", 'w')
+f.write("%s\n" % str(params['fluxBins']))
+f.write("%s\n" % str(dnds))
+f.close()
+

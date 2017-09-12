@@ -1,0 +1,19 @@
+#Data Specifications
+map = 'data_JyPerSr.fits'
+weight = 'weights.fits' #'coadd_weights.fits'
+lowestWeightAllowed = 0.00001#0.01 for Simone's map where max weight is 9100; Sigurd's max weight is ~0.05
+
+#Catalog Specifications
+makeCatalog= 'makeCatalog.dict'
+initSNR = 50.0
+mainSNR = 2.8
+
+#Field Specifications
+fieldnames = ['test']
+
+#Lat/Lon Limits
+fielddefs  = {'Deep6':[30.0, 40.0, -7.0, -1.0], 'test':[34.0, 38.0, -6.0, -2.0]}
+
+fluxCut = [0.0068]
+
+catalogPrefix = "catalog"

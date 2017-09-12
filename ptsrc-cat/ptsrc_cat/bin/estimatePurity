@@ -1,0 +1,54 @@
+#!/bin/env python
+
+from flipper import *
+import catalog
+
+params = flipperDict.flipperDict()
+params.readFromFile(sys.argv[1])
+
+if not os.path.exists("catalogs/catalog.pickle"):
+    mcParams = flipperDict.flipperDict()
+    mcParams.readFromFile(params['makeCatalogParams'])
+   
+    if not mcParams['inputDir'] in (None, ""):
+        mp = liteMap.liteMapFromFits("%s/%s" % (mcParams['inputDir'], mcParams['data']))
+        wt = liteMap.liteMapFromFits("%s/%s" % (mcParams['inputDir'], mcParams['weight']))
+    else:
+        mp = liteMap.liteMapFromFits(mcParams['data'])
+        wt = liteMap.liteMapFromFits(mcParams['weight'])
+
+    tm = liteMap.liteMapFromFits(params['templateMap'])
+    
+    mp.data -= tm.data
+    mp.data *= -1.
+ 
+    mp.writeFits("./dataInverted.fits", overWrite=True)
+    wt.writeFits('./weight.fits', overWrite=True)
+    
+    mcParams['inputDir'] = None
+    mcParams['data'] = './dataInverted.fits'
+    mcParams['weight'] = './weight.fits'
+    mcParams.writeToFile("makeCatalog_inv.dict")
+
+    os.system("makeCatalog %s" % ("makeCatalog_inv.dict"))
+
+cat = catalog.readFromPickleFile("catalogs/catalog.pickle")
+
+for c in params['excludeCatalogs']:
+    rowsRemoved = 0
+    try:
+        ocat = catalog.readFromPickleFile(c)
+    except:
+        ocat = catalog.readFromASCIIFile(c)
+
+    for orow in ocat:
+        d, row, rows = cat.findNearestSource(orow, rad = params['associationRadius'])
+        rowsRemoved += len(rows)
+        for r in rows:
+            cat.remove(r[1])
+
+    print "%s: Excluded %d sources" % (c, rowsRemoved)
+
+cat.writeASCII("%s.txt" % params['output'])
+cat.write("%s.pickle" % params['output'])
+cat.writeRegionFile("%s.reg" % params['output'])

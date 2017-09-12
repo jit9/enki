@@ -1,0 +1,121 @@
+#!/usr/bin/env python
+import matplotlib
+matplotlib.use('Agg')
+from flipper import *
+import catalog
+import time
+time0=time.time()
+
+params = flipperDict.flipperDict()
+params.readFromFile(sys.argv[1])
+
+mp = liteMap.liteMapFromFits(params['map'])
+wt = liteMap.liteMapFromFits(params['weight'])
+
+inds = numpy.where(wt.data < params['lowestWeightAllowed'])
+mp.data[inds] = 0.
+wt.data[inds] = 0.
+
+pids = []
+for fn in params['fieldnames']:
+    pids.append(os.fork())
+    if pids[-1] != 0.:
+        print "Processing field %s (pid=%d)." %( fn, pids[-1])
+        continue
+    #Select submaps for fields
+    smp = mp.selectSubMap(*params['fielddefs'][fn])
+    swt = wt.selectSubMap(*params['fielddefs'][fn])
+    #os.system('rm -rf %s' % fn)
+    if not os.path.exists(fn):
+        os.makedirs("%s/init" % fn)
+        print "created directory "+fn
+    smp.writeFits("%s/data_%s.fits" % (fn, fn), overWrite=True)
+    swt.writeFits("%s/weights_%s.fits" % (fn, fn), overWrite=True)
+
+    #Run First Catalog
+    time_cat_init0=time.time()
+    makeCat = flipperDict.flipperDict()
+    makeCat.readFromFile(params['makeCatalog'])
+    makeCat['snrThreshold'] = params['initSNR']
+    makeCat['data'] = '../data_%s.fits' % fn
+    makeCat['weight'] = '../weights_%s.fits' % fn
+    makeCat.writeToFile('%s/init/makeCatalog.dict' % fn)
+    os.chdir('%s/init' % fn)
+    initcatresult = os.system('makeCatalog makeCatalog.dict 1>makeCatalog.out 2>makeCatalog.err')
+    time_cat_init1=time.time()
+    print "Time for initial catalog = ", time_cat_init1-time_cat_init0
+
+    #Create Source template; subtract from original map; smear locations
+    if initcatresult == 0:
+        if not os.path.exists('maps/templateSubtractedData.fits'):
+            os.system("makeTemplateFromCatalogFast ../../makeTemplateFromCatalog.dict" + \
+                    " 1>makeTemplate.out 2>makeTemplate.err")
+            makeTemplate = flipperDict.flipperDict()
+            makeTemplate.readFromFile('../../makeTemplateFromCatalog.dict')
+            template = liteMap.liteMapFromFits(makeTemplate['outputFilename'])
+            smp.data -= template.data
+            smp.writeFits('maps/templateSubtractedData.fits', overWrite=True)
+        smear = flipperDict.flipperDict()
+        smear['catalogPickle'] = 'catalogs/catalog.pickle'
+        smear['map'] = "maps/templateSubtractedData.fits"
+        smear['smearRadius'] = 5./60.
+        smear['outmap'] = 'maps/templateSubtractedDataSmeared.fits'
+        smear.writeToFile('smear.dict')
+        if not os.path.exists('maps/templateSubtractedDataSmeared.fits'):
+            os.system('smearCatalogLocations smear.dict 1>smear.out 2>smear.err') #could be more robust
+    
+    time_catalog_main0=time.time()
+    print "Time for smearing initial sources = ", time_catalog_main0-time_cat_init1
+
+    #Run main Catalog
+    os.chdir('..')
+    if not os.path.exists('main'):
+        os.makedirs("main/maps")
+    os.system("cp init/maps/signalTransform.fits " + \
+            "init/maps/extraFilter.fits main/maps")
+    makeCat['snrThreshold'] = params['mainSNR']
+    if initcatresult == 0:
+        makeCat['data'] = '../init/maps/templateSubtractedDataSmeared.fits'
+    makeCat.writeToFile('main/makeCatalog.dict')
+    os.chdir('main')
+    os.system('makeCatalog makeCatalog.dict 1>makeCatalog.out 2>makeCatalog.err')
+    time_catalog_main1=time.time()
+    print "Time for main catalog = ", time_catalog_main1-time_catalog_main0
+
+    #Combine Catalogs
+    os.chdir('..')
+    cat_main = catalog.read('main/catalogs/catalog.pickle')
+    if initcatresult == 0:
+        cat_init = catalog.read('init/catalogs/catalog.pickle')
+        cat_main += cat_init
+    cat_main.sortBy('val')
+    cat_main.write('catalog_%s.pickle' % fn)
+    cat_main.writeASCII('catalog_%s.txt' % fn)
+    cat_main.writeRegionFile('catalog_%s.reg' % fn)
+    os.chdir('..')
+    os._exit(0)
+
+print "Spawned processes:", pids
+for pid in pids:
+    print "Waiting on Child Process Number", pid
+    os.waitpid(pid,0)
+
+cats = []
+for fn in params['fieldnames']:
+    if os.path.exists('%s/init/catalogs/catalog.pickle' % fn):
+        cats.append(catalog.read('%s/init/catalogs/catalog.pickle' % fn))
+    cats.append(catalog.read('%s/main/catalogs/catalog.pickle' % fn))
+
+#Combine All Catalogs
+cat = cats[0]
+for i in xrange(len(cats)-1):
+    cat += cats[i+1]
+cat.sortBy('val')
+cat.write('%s.pickle' % params['catalogPrefix'])
+cat.writeASCII('%s.txt' % params['catalogPrefix'])
+cat.writeRegionFile('%s.reg' % params['catalogPrefix'])
+
+
+time1=time.time()
+
+print "makeCatalogMaster run time: %f"%(time1-time0)

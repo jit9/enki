@@ -1,0 +1,30 @@
+#!/bin/env python
+
+import sys, os
+import catalog
+from flipper import *
+import fff
+
+params = flipperDict.flipperDict()
+params.readFromFile(sys.argv[1])
+
+cols = params['cols']
+cat = catalog.catalog(cols = cols)
+cat.readFromFile(params['catalogFile'])
+
+m = liteMap.liteMapFromFits(params['map'])
+
+if not os.path.exists(params['outDir']):
+    os.makedirs(params['outDir'])
+
+for row in cat:
+    ra = row['ra']
+    dec = row['dec']
+    cosDec = numpy.cos(dec*numpy.pi/180)
+    delta = params['mapWidth']/2./60. # arcmin
+    try:
+        sm = m.selectSubMap( ra - delta/cosDec, ra + delta/cosDec, dec - delta, dec + delta ) # Assumes RA, Dec are in degrees
+    except:
+        continue
+    sm.writeFits("%s/m_%06.2f_%06.2f_%06.2f.fits" % (params['outDir'], 1/row['s/n'], ra, dec), overWrite=True)
+

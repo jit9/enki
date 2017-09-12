@@ -1,0 +1,12 @@
+#!/bin/env python
+
+from flipper import *
+
+inFile = sys.argv[1]
+freq   = float(sys.argv[2])
+
+n = liteMap.liteMapFromFits(inFile)
+
+n.convertToJyPerSrFromMicroK(freq)
+
+n.writeFits("%s_JyPerSr.fits" % sys.argv[1][:-5])

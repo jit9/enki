@@ -1,0 +1,403 @@
+#!/bin/env python
+from flipper import *
+import csPlot
+import catalog
+import csGroup
+
+paramFile = sys.argv[1]
+params = flipperDict.flipperDict()
+params.readFromFile(paramFile)
+
+mcParams = flipperDict.flipperDict()
+mcParams.readFromFile(params['makeCatalogParams'])
+
+cat = catalog.readFromPickleFile(params['catalogPickle'])
+
+#####
+#
+# Apply a final calibration
+#
+#####
+
+# ACTUALLY, better to include a note in the text that says that there is an extra X% calibration uncertainty
+
+for row in cat:         
+    row['val'] *= params['finalCalibration']
+    row['val_flux'] *= params['finalCalibration']
+    row['err'] *= params['finalCalibration']
+    row['err_flux'] *= params['finalCalibration']
+
+
+plotDir = "plots"
+if not os.path.exists(plotDir):
+    os.makedirs(plotDir)
+dataDir = "reducedData"
+if not os.path.exists(dataDir):
+    os.makedirs(dataDir)
+tableDir = "tables"
+if not os.path.exists(tableDir):
+    os.makedirs(tableDir)
+mapDir = "maps"
+if not os.path.exists(mapDir):
+    os.makedirs(mapDir)
+catDir = "catalogs"
+if not os.path.exists(catDir):
+    os.makedirs(catDir)
+
+###############################################################
+#
+# Make plots and also store associated data
+#
+###############################################################
+
+
+#
+# dNdS Recovered Data Plot
+# NEED TO ADD N(S) PLOT!!!!
+#
+
+print "Creating recovered dNdS (ADD N(S))"
+
+mp = liteMap.liteMapFromFits(params["filteredMaskedMap"])
+pixArea = mp.pixScaleX*mp.pixScaleY
+inds = numpy.where(mp.data != 0)
+area = pixArea*len(inds[0])
+print "    Total area= %0.4f sr" % area
+
+svec, dndsMean, dndsRMS = csPlot.dndsVecs([cat], ['val_flux'], [1.], params['dndsBins'] , area)
+pylab.loglog(svec, svec**(5./2.)*dndsMean, '.')
+pylab.xlabel("log(S[Jy])")
+pylab.ylabel("log(S$^{5/2}$dN/dS[Jy$^{3/2}$])")
+pylab.savefig('plots/dnds.png')
+numpy.savetxt( "%s/dnds.txt" % dataDir , [svec,dndsMean,dndsRMS])
+pylab.clf()
+
+
+#
+# Sim Related Plots
+#  + Input vs. Recovered Flux
+#  + Purity and Completeness
+#
+
+if params['catMergedPickle'] != None:
+    
+    print "Found Sim Catalog"
+
+    catMerged = catalog.readFromPickleFile(params['catMergedPickle'])
+    simMerged = catalog.readFromPickleFile(params['simMergedPickle'])
+
+    #Make recovered flux plot
+
+    print "    Creating flux recovery plot"
+
+    rf = catMerged.arrayFromCol("val_flux")
+    re = cat.arrayFromCol("err_flux")
+    cf = catMerged.arrayFromCol("sim_val")/1000.
+    pylab.errorbar(cf[numpy.where(cf!=-.999)], rf[numpy.where(cf!=-.999)], yerr=re[numpy.where(cf!=-.999)], fmt='.')
+    pylab.gca().set_yscale('log')
+    pylab.gca().set_xscale('log')
+    pylab.plot([.010,5.00],[.010,5.00])
+    pylab.xlabel("Input Flux (Jy)")
+    pylab.ylabel("Recovered Flux (Jy)")
+    pylab.savefig("plots/recoveredFluxes.png")
+    pylab.clf()
+    
+    #Make purity/completeness plots
+    
+    print "    Creating purity and completeness plots"
+
+    csPlot.integralPlot(catMerged, 's/n', [4,10], [.8,1.05], "SNR", "Purity(>SNR)", "plots/purity_snr.png")
+    csPlot.integralPlot(catMerged, 'val_flux', [.020, .050], [.8,1.05], "Recovered Flux (Jy)", "Purity(>Flux)", "plots/purity_flux.png")
+    csPlot.integralPlot(simMerged, 'val', [.020, .050], [.8,1.05], "Input Flux (Jy)", "Completeness(>Flux)", "plots/completeness_flux.png", scale = 0.001)
+
+#
+# Plots for a subarea of data (e.g., cleaner subarea with more complete data)
+#  + dNdS
+#  + NEED TO ADD N(S)
+#  + Input vs. Recovered Flux
+#  + Purity and Completeness
+#
+
+if params['subCatPickle'] != None:
+
+    print "Found subarea catalog."
+    subCat = catalog.readFromPickleFile(params['subCatPickle'])
+    if params['subCatMergedPickle'] != None:
+        print "    Creating subcatalog purity and completeness plots."
+        subCatM = catalog.readFromPickleFile(params['subCatMergedPickle'])
+        subSimM = catalog.readFromPickleFile(params['simCatMergedPickle'])
+        csPlot.integralPlot(subCatM, 's/n', [4,10], [.8,1.05], "SNR", "Purity(>SNR)", "plots/submap_purity_snr.png")
+        csPlot.integralPlot(subCatM, 'val_flux', [.020, .050], [.8,1.05], "Recovered Flux (Jy)", "Purity(>Flux)", "plots/submap_purity_flux.png")
+        csPlot.integralPlot(subSimM, 'val', [.020, .050], [.8,1.05], "Input Flux (Jy)", "Completeness(>Flux)", "plots/submap_completeness_flux.png", scale=0.001)
+    
+    print "    Creating subcatalog dNdS plot."
+
+    if mp.x1 > 180.:
+        x1 = mp.x1 - 360.
+    else:
+        x1 = mp.x1
+    ra0 = x1 + mcParams['subcatalogOffsets'][0]
+    ra1 = mp.x0 + mcParams['subcatalogOffsets'][1]
+    dec0 = mp.y0 + mcParams['subcatalogOffsets'][2]
+    dec1 = mp.y1 + mcParams['subcatalogOffsets'][3]
+    print ra0, ra1, dec0, dec1
+
+    sm = mp.selectSubMap(ra0, ra1, dec0, dec1)
+    inds = numpy.where(sm.data != 0)
+    subarea = pixArea*len(inds[0])
+    print "    Total subarea= %0.4f sr" % subarea
+
+    svec, dndsMean, dndsRMS = csPlot.dndsVecs([subCat], ['val_flux'], [1.], params['dndsBins'] , subarea)
+    pylab.loglog(svec, svec**(5./2.)*dndsMean, '.')
+    pylab.xlabel("log(S[Jy])")
+    pylab.ylabel("log(S$^{5/2}$dN/dS[J$^{3/2}$])")
+    pylab.savefig('plots/submap_dnds.png')
+    numpy.savetxt( "%s/dnds_submap.txt" % dataDir, [svec, dndsMean, dndsRMS])
+    pylab.clf()
+
+###############################################################
+#
+# Augment the catalog and create tex table(s)
+#
+###############################################################
+
+
+#
+# ACT ID
+#
+
+print "Adding ACT ID to Catalog"
+
+cat.cols['ACT ID'] = {'desc':'ACT ID'   , 'order': len(cat.cols.keys()), 'type': str, 'fmt' : '%s', 'default': '--'}
+#cat.cols['Radio ID'] = {'desc':'Non-ACT Radio ID'   , 'order': len(cat.cols.keys()), 'type': str, 'fmt' : '%s', 'default': '--'}
+nir = 0
+nradio = 0
+for row in cat:
+    ra, dec = catalog.convertRADecDegreesToSexagesimal(row['ra'], row['dec'])
+    row['ACT ID'] = 'ACT J%02d%02d%+02d%02d' % (ra[0], ra[1], dec[0], dec[1])
+    #row['Radio ID'], ir = searchNED.searchNED(row['ra'], row['dec'])
+
+
+#
+# Flux at other radio frequencies
+#
+
+cat.cols['PMN_val'] = {'desc':'PMN Flux'   , 'order': len(cat.cols.keys()), 'type': float, 'fmt' : '%10.3f', 'default': -999.}
+cat.cols['PMN_err'] = {'desc':'PMN Flux'   , 'order': len(cat.cols.keys()), 'type': float, 'fmt' : '%10.3f', 'default': -999.}
+cat.cols['SUMSS_val'] = {'desc':'SUMSS Flux'   , 'order': len(cat.cols.keys()), 'type': float, 'fmt' : '%10.3f', 'default': -999.}
+cat.cols['SUMSS_err'] = {'desc':'SUMSS Flux'   , 'order': len(cat.cols.keys()), 'type': float, 'fmt' : '%10.3f', 'default': -999.}
+
+print "Adding Other Radio Data to Catalog"
+
+##### Coords
+
+def sexyGesimalToDecimalRA(hr, min, sec):
+    return 15.*(hr + min/60. + sec/3600.)
+def sexyGesimalToDecimalDec(deg, min, sec):
+    return numpy.sign(deg)*(abs(deg) + min/60. + sec/3600.)
+
+limits = [mp.x1, mp.x0, mp.y0, mp.y1] # limit candidate catalog sources to this range of coords ra0,ra1,dec0,dec1
+
+diff = params['otherCatAssociationRadius'] # id sources with this distance (deg)
+#####
+
+pmnCatFile = "/scr/queequeg1/shared/projects/sourcesAndClusterSept2009/catalogs/VIII_38_pmns.dat.txt"
+
+pmn_ra_hr    = 2
+pmn_ra_min   = 3
+pmn_ra_sec   = 4
+pmn_dec_deg  = 5
+pmn_dec_min  = 6
+pmn_dec_sec  = 7
+pmn_flux     = 8
+pmn_err      = 9
+
+pmnCat = file(pmnCatFile)
+pmnName  = []
+pmnRA    = []
+pmnDec   = []
+pmnFlux  = []
+pmnErr  = []
+i=0
+for line in pmnCat:
+    fields = line[:-1].split()
+#     print fields
+    ra_hr = float(fields[pmn_ra_hr])
+    ra_min = float(fields[pmn_ra_min])
+    ra_sec = float(fields[pmn_ra_sec])
+    dec_deg = float(fields[pmn_dec_deg])
+    dec_min = float(fields[pmn_dec_min])
+    dec_sec = float(fields[pmn_dec_sec])
+    ra = sexyGesimalToDecimalRA(ra_hr, ra_min, ra_sec)
+    dec =  sexyGesimalToDecimalDec(dec_deg, dec_min, dec_sec)
+    if ra > limits[0] and ra < limits[1] and dec > limits[2] and dec < limits[3]:
+        pmnName.append( "%s %s" % (fields[0], fields[1]))
+        pmnRA.append(ra)
+        pmnDec.append(dec)
+        pmnFlux.append(float(fields[pmn_flux]))
+        pmnErr.append(float(fields[pmn_err]))
+    i+=1
+
+print "    Found %d PMN sources within limits" % len(pmnName)
+
+j=0
+for row in cat:
+    distOld = -1.
+    cosDec = numpy.cos(row['dec']*numpy.pi/180.)
+    row['PMN_val'] = cat.cols['PMN_val']['default']
+    row['PMN_err'] = cat.cols['PMN_err']['default']
+    for i in xrange(len(pmnRA)):
+        dist =  (((pmnRA[i]-row['ra'])*cosDec)**2 + (pmnDec[i]-row['dec'])**2)**0.5
+        if dist <= diff:
+            if distOld == -1. or dist < distOld:
+                row['PMN_val'] = pmnFlux[i]
+                row['PMN_err'] = pmnErr[i]
+            if distOld != -1:
+                print "    Found double association at ", row['ra'], row['dec']
+            else:
+                j+=1
+            distOld = dist
+
+print "    Found %d associations with PMN" % j
+
+#####
+
+sumssCatFile = "/scr/queequeg1/shared/projects/sourcesAndClusterSept2009/catalogs/sumsscat.Mar-11-2008"
+
+sumss_ra_hr    = 0
+sumss_ra_min   = 1
+sumss_ra_sec   = 2
+sumss_dec_deg  = 3
+sumss_dec_min  = 4
+sumss_dec_sec  = 5
+sumss_flux     = 10
+sumss_err      = 11
+
+sumssCat = file(sumssCatFile)
+sumssName  = []
+sumssRA    = []
+sumssDec   = []
+sumssFlux  = []
+sumssErr  = []
+
+for line in sumssCat:
+    fields = line[:-1].split()
+    ra_hr = float(fields[sumss_ra_hr])
+    ra_min = float(fields[sumss_ra_min])
+    ra_sec = float(fields[sumss_ra_sec])
+    dec_deg = float(fields[sumss_dec_deg])
+    dec_min = float(fields[sumss_dec_min])
+    dec_sec = float(fields[sumss_dec_sec])
+    ra = sexyGesimalToDecimalRA(ra_hr, ra_min, ra_sec)
+    dec =  sexyGesimalToDecimalDec(dec_deg, dec_min, dec_sec)
+    if ra > limits[0] and ra < limits[1] and dec > limits[2] and dec < limits[3]:
+#         print fields
+        sumssName.append( "%s %s" % (fields[0], fields[1]))
+        sumssRA.append(ra)
+        sumssDec.append(dec)
+        sumssFlux.append(float(fields[sumss_flux]))
+        sumssErr.append(float(fields[sumss_err]))
+#         print fields[sumss_flux], fields[sumss_err]
+
+print "    Found %d SUMSS sources within limits" % len(sumssName)
+
+j=0
+for row in cat:
+    distOld = -1.
+    cosDec = numpy.cos(row['dec']*numpy.pi/180.)
+    row['SUMSS_val'] = cat.cols['SUMSS_val']['default']
+    row['SUMSS_err'] = cat.cols['SUMSS_err']['default']
+    for i in xrange(len(sumssRA)):
+        dist =  (((sumssRA[i]-row['ra'])*cosDec)**2 + (sumssDec[i]-row['dec'])**2)**0.5
+        if dist <= diff:
+            if distOld == -1. or dist < distOld:
+                row['SUMSS_val'] = sumssFlux[i]
+                row['SUMSS_err'] = sumssErr[i]
+            if distOld != -1:
+                print "    Found double association at ", row['ra'], row['dec']
+            else:
+                j+=1
+            distOld = dist
+print "    Found %d associations with SUMSS" % j
+
+
+cat.write("%s/catalog_with_extras.pickle" % catDir)
+
+#
+#  Remove detections lower than some snr for inclusion in the table
+#
+
+print "Downsizing to contain only %.1f sigma detections" % params['downsizeSNR']
+
+rowsToRemove = []
+for row in cat:
+    if row['s/n'] < params['downsizeSNR']:
+        rowsToRemove.append(row)
+
+for row in rowsToRemove:
+    cat.remove(row)
+
+#
+# Make the table
+#
+
+print "Creating table"
+
+cat.sortBy('ra')
+format = {'ACT ID': '%s', 'ra': '%s', 'dec': '%s', '148 GHz Flux':'%d', \
+        'PMN_val':"%f", 'SUMSS_val':"%f"   }
+colNames = ['ACT ID', 'ra', 'dec', 'val_flux', 'PMN_val', 'SUMSS_val']
+tableFile = file("%s/sources.table" % tableDir,   'w')
+
+for row in cat:
+    for colName in colNames:
+        if colName == 'ra':
+            ra = row[colName]
+            if ra < 0:
+                ra += 360.
+            hr = int(ra/15.)
+            minsec = numpy.mod(ra,15.)/15.*60
+            min = int(minsec)
+            sec = int(numpy.mod(minsec,1.)*60)
+            tableFile.write(" %02d:%02d:%02d " % (hr,min,sec))
+        elif colName == 'dec':
+            dec = row[colName]
+            hr = int(dec)
+            minsec = numpy.mod(abs(dec),1.)*60
+            min = int(minsec)
+            sec = int(numpy.mod(minsec,1.)*60)
+            tableFile.write(" %02d:%02d:%02d " % (hr,min,sec))
+        elif colName == 'val_flux':
+            tableFile.write(" %.0f $\pm$ %.0f " % (row[colName]*1000., row['err_flux']*1000.) )
+        elif colName == 'SUMSS_val':
+            if row[colName] == cat.cols[colName]['default']:
+                tableFile.write(" -- ")
+            else:
+                tableFile.write(" %.0f $\pm$ %.0f " % (row[colName], row['SUMSS_err']) )
+        elif colName == 'PMN_val':
+            if row[colName] == cat.cols[colName]['default']:
+                tableFile.write(" -- ")
+            else:
+                tableFile.write(" %.0f $\pm$ %.0f " % (row[colName], row['PMN_err']) )
+        else:
+            fmt = " %s " % format[colName]
+            tableFile.write( fmt % (row[colName]) )
+        if colName == colNames[-1]:
+            tableFile.write(" \\\\ \n"  )
+        else:
+            tableFile.write(" & " )
+tableFile.close()
+
+
+######
+#
+# Write out maps with sources subtracted
+#
+######
+
+mp = liteMap.liteMapFromFits( "%s/%s" % (mcParams['inputDir'], mcParams['data']))
+gl = csGroup.groupList()
+gl.read(params["groupPickle"])
+gl.inPaintOverGroups(mp, supermap = mp)
+
+mp.writeFits("%s/sourcesRemoved.fits" % mapDir, overWrite=True)

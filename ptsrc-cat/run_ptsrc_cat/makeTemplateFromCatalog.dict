@@ -1,0 +1,15 @@
+outputdir='.'
+catalog = "/Users/heatherp/Documents/Testing_point_source_code_install/ptsrc-cat/run_ptsrc_cat/test/init/catalogs/catalog.pickle"
+templateMap = "/Users/heatherp/Documents/Testing_point_source_code_install/ptsrc-cat/run_ptsrc_cat/test/data_test.fits"
+
+hw = 0.5
+pixelPitchUpgradeFactor = 4
+nThreads = 10
+fluxField = 'val_flux'
+
+fluxMultiplier = 1.00
+
+catTemplateKey = None
+templates = { 'all': { 'file':"/Users/heatherp/Documents/Testing_point_source_code_install/ptsrc-cat/ptsrc_cat/beams/beam_tform_140206_jitter_deep5_floats.txt",'maxEll':24997,'gaussConv':None,'rescale':1.}}
+
+outputFilename = "maps/templateMap.fits"

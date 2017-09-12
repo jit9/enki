@@ -1,0 +1,77 @@
+#!/bin/env python
+
+from flipper import *
+import catalog
+
+params = flipperDict.flipperDict()
+params.readFromFile(sys.argv[1])
+
+if params['catalogPickle'] != None:
+    cat = catalog.readFromPickleFile(params['catalogPickle'])
+elif params['catalogASCII']  != None:
+    cat = catalog.readFromASCII(params['catalogASCII'])
+
+#
+# Make the table
+#
+
+
+print "Creating table"
+
+cat.sortBy('ra')
+format = {'id': '%s', 'ra_s': '$%s$', 'dec_s': '$%s$', '148 GHz Flux':'%.1f', '148 GHz Flux':'%.1f', \
+        'integration_time': "%.1f", 'ATG20_IAUname':"%s", 'flux_db':"%.1f", 's/n':'%.1f' }
+colNames = ['id', 'ra_s', 'dec_s', 's/n', 'val_flux', 'flux_db', 'integration_time', 'ATG20_IAUname']
+tableFile = file(params['output'],   'w')
+
+for row in cat:
+    for colName in colNames:
+        if colName == 'id':
+            prefix, coord = row['id'].split(' ')
+            ra, dec = coord.split('-')
+            tableFile.write(" ACT-S %s$-$%s " % (ra,dec))
+        elif colName == 'ra':
+            ra = row[colName]
+            if ra < 0:
+                ra += 360.
+            hr = int(ra/15.)
+            minsec = numpy.mod(ra,15.)/15.*60
+            min = int(minsec)
+            sec = int(numpy.mod(minsec,1.)*60)
+            tableFile.write(" $%02d$:%02d:%02d " % (hr,min,sec))
+        elif colName == 'dec':
+            dec = row[colName]
+            hr = int(dec)
+            minsec = numpy.mod(abs(dec),1.)*60
+            min = int(minsec)
+            sec = int(numpy.mod(minsec,1.)*60)
+            tableFile.write(" $%02d$:%02d:%02d " % (hr,min,sec))
+        elif colName == 'val_flux':
+            tableFile.write(" %.1f " % (row[colName]*1000.) )
+        elif colName == 'flux_db':
+            tableFile.write( " %.1f$^{+%.1f}_{-%.1f}$ " % (row[colName], row['err_plus'], row['err_minus']) )
+        elif colName == 'SUMSS_val':
+            if row[colName] == cat.cols[colName]['default']:
+                tableFile.write(" -- ")
+            else:
+                tableFile.write(" %.0f $\pm$ %.0f " % (row[colName], row['SUMSS_err']) )
+        elif colName == 'PMN_val':
+            if row[colName] == cat.cols[colName]['default']:
+                tableFile.write(" -- ")
+            else:
+                tableFile.write(" %.0f $\pm$ %.0f " % (row[colName], row['PMN_err']) )
+        elif colName == 'ATG20_IAUname':
+            if row[colName] == '--':
+                tableFile.write('...')
+            else:
+                ra, dec = row[colName].split('-')
+                ra = ra[5:]
+                tableFile.write("AT20G %s$-$%s " % (ra,dec))
+        else:
+            fmt = " %s " % format[colName]
+            tableFile.write( fmt % (row[colName]) )
+        if colName == colNames[-1]:
+            tableFile.write(" \\\\ \n"  )
+        else:
+            tableFile.write(" & " )
+tableFile.close()

@@ -1,0 +1,85 @@
+#!/bin/env python
+
+import pickle
+from flipper import *
+import catalog, csFilter
+
+params = flipperDict.flipperDict()
+params.readFromFile(sys.argv[1])
+
+bins = params['bins']
+    
+# Read in map in Jy/sr
+m = liteMap.liteMapFromFits(params["map"])
+
+if not os.path.exists('submaps'):
+    os.makedirs('submaps')
+if not os.path.exists('images'):
+    os.makedirs('images')
+if not os.path.exists('errors'):
+    os.makedirs('errors')
+
+errorArraysDiagonal = {}
+errorArraysFull = {}
+
+for decLimits in params['errorCalc']['dec']:
+    dec = numpy.mean(decLimits)
+    print "running", dec
+    cosdec = numpy.cos(dec*numpy.pi/180.)
+    nmap = 0
+    nra = 0
+    decProfiles = []
+    while nmap < params['errorCalc']['nmap']:
+        halfwidth = params['submapHalfwidth']
+        ra = params['errorCalc']['ra0'] + 2*halfwidth/cosdec*nra
+        ra_s, dec_s, sign = catalog.convertRADecDegreesToSexagesimal(ra, dec)
+        tup = ra_s + dec_s
+        nra +=1
+        sm = m.selectSubMap( ra-halfwidth/cosdec, ra+halfwidth/cosdec, dec-halfwidth, dec+halfwidth )
+        i0 = sm.Ny/2
+        j0 = sm.Nx/2
+        ra0, dec0 = sm.pixToSky(j0, i0)
+        bg = csFilter.estimateBG(sm, ra0, dec0, params['backgroundRadius'])
+        sm.data -= bg.data
+        if sm.data.max() > 5 * sm.data.std(): #veto for sources in map
+            continue
+        nmap += 1 #there are no soures in this map: safe to increment the count
+
+        halfwidth = (bins[-1][0]+120.)/3600. #hw for upgraded map is 2' larger than binning
+        ssm = sm.selectSubMap(ra-halfwidth/cosdec, ra+halfwidth/cosdec, dec-halfwidth, dec+halfwidth)
+        ssm_ug = liteMap.upgradePixelPitch(ssm , params['upgradePixelPitch'])
+        ssm_ug.writeFits("submaps/ERR_%02d%02d%02d%+02d%02d%02d.fits" % tup, overWrite=True)
+    
+        i0 = ssm_ug.Ny/2
+        j0 = ssm_ug.Nx/2
+        ra0, dec0 = ssm_ug.pixToSky(j0, i0)
+        cen, avg, std = liteMap.binDataAroundPoint( ssm_ug, ra0, dec0, bins, median=True )
+        avg -= numpy.mean(avg)
+        decProfiles.append(avg)
+
+    decProfiles = numpy.array(decProfiles)
+    errorArraysDiagonal[dec] = numpy.std(decProfiles, axis=0)**2
+    # Full covariance
+    nbin = len(avg)
+    cov = numpy.zeros((nbin, nbin))
+    for i in xrange(len(avg)):
+        cov[i,i] = decProfiles[:,i].var()
+        for j in xrange(i):
+            cov[i,j] = ((decProfiles[:,i]-decProfiles[:,i].mean())*(decProfiles[:,j]-decProfiles[:,j].mean())).sum()/len(decProfiles[:,i])
+            cov[j,i] = cov[i,j]
+    #cov = numpy.cov(decProfiles)
+    errorArraysFull[dec] = cov
+
+    #pylab.plot( cen/60., errorArraysDiagonal[dec] , label= "dec = %0.1f" % dec)
+pylab.legend()
+pylab.xlabel('radius (arcsec)')
+pylab.ylabel('variance (uK^2)')
+pylab.savefig("images/profilesVariance.png", overWrite=True)
+
+f = file("errors/profileVarianceFull.pickle", 'w')
+pickle.dump(errorArraysFull,f)
+f.close()
+ea = flipperDict.flipperDict()
+ea.update(errorArraysFull)
+ea.writeToFile("errors/profileVarianceFull.dict")
+

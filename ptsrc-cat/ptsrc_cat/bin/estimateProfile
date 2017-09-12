@@ -1,0 +1,217 @@
+#!/bin/env python
+
+from flipper import *
+import catalog, csFilter
+import pickle
+
+params = flipperDict.flipperDict()
+params.readFromFile(sys.argv[1])
+
+bins = params['bins']
+    
+# Read in map in Jy/sr
+m = liteMap.liteMapFromFits(params['map'])
+
+f = file(params['beam'])
+ell=[]
+wl = []
+for line in f:
+    fields = line[:-1].split()
+    ell.append(float(fields[0]))
+    wl.append(float(fields[1]))
+f.close()
+
+#list of targets
+try:
+    cat = catalog.readFromPickleFile(params['catalog'])
+except:
+    try:
+        cat = catalog.readFromASCIIFile(params['catalog'])
+    except:
+        raise InputError("Could not read in catalog specified in param file")
+if params['sortBy'] != None:
+    cat.sortBy(params['sortBy'])
+    if params['reverseSort']:
+        cat.reverse()
+
+#Associated errors: run estimateProfileErrors
+try:
+    f = file("errors/profileVarianceFull.pickle")
+except:
+    raise RuntimeError("Need profileErrors.pickle: run estimateProfileErrors first.")
+errors = pickle.load(f)
+f.close()
+
+if not os.path.exists('submaps'):
+    os.makedirs('submaps')
+if not os.path.exists('profiles'):
+    os.makedirs('profiles')
+if not os.path.exists('images'):
+    os.makedirs('images')
+
+sourceFile = file("profiles/profiles.txt", 'w')
+sigmas = []
+chi_sqs = []
+for source in params['sources']:
+    ra  = cat[source]['ra'] 
+    dec = cat[source]['dec'] 
+    cosdec = numpy.cos(dec*numpy.pi/180.)
+    ra_s, dec_s,sign = catalog.convertRADecDegreesToSexagesimal( ra, dec )
+    tup = ra_s + tuple([sign]) + dec_s
+    print tup
+    iau_name = "ACT_J%02d%02d%02d%s%03d%02d%02d" % tup
+    print "Processing %s" % iau_name 
+    decDiff = 100.
+    for _dec in errors.keys():
+        diff = abs(dec-_dec)
+        if diff < decDiff:
+            decDiff = diff 
+            errDec  = _dec
+            err = errors[_dec]
+    print "  Error dec: %0.1f" % errDec
+
+    #run sims to get standard deviations
+
+    halfwidth = params['submapHalfwidth']
+    sm = m.selectSubMap( ra-halfwidth/cosdec, ra+halfwidth/cosdec, dec-halfwidth, dec+halfwidth )
+    
+    bg = csFilter.estimateBG(sm, ra, dec, 5.)
+    sm.data -= bg.data
+
+    halfwidth = (bins[-1][0]+120.)/3600. #hw for upgraded map is 2' larger than binning
+    ssm = sm.selectSubMap(ra-halfwidth/cosdec, ra+halfwidth/cosdec, dec-halfwidth, dec+halfwidth)
+    ssm_ug = liteMap.upgradePixelPitch(ssm , params['upgradePixelPitch'])
+    ssm_ug.writeFits("submaps/%s.fits" % iau_name , overWrite=True)
+    
+    center_inds = numpy.where(ssm_ug.data == ssm_ug.data.max())
+    i0 = center_inds[0][0]
+    j0 = center_inds[1][0]
+    ra0, dec0 = ssm_ug.pixToSky(j0, i0)
+    cen, avg, std = liteMap.binDataAroundPoint( ssm_ug, ra0, dec0, bins, median=True )
+
+    def fitModel( sigma, plot=False ):
+        beam = csFilter.makeTemplate( sm, wl, ell, 39997)
+        beam.data /= beam.data.sum()/beam.Nx/beam.Ny #renormalize such that spatial profile is unit normalized
+        beam.data = numpy.real(numpy.fft.ifft2(beam.data))
+        beam.data =numpy.fft.fftshift(beam.data)
+        #if sigma != 0.:
+        #    beam = beam.convolveWithGaussian(fwhm= 2.35482*sigma)
+        #    beam.data /= beam.data.max()
+        bg_beam = csFilter.estimateBG(beam, ra, dec, 5.) #XXX The radius should be a parameter
+        beam.data -= bg_beam.data
+         
+        beam_sm = beam.selectSubMap(ra-halfwidth/cosdec, ra+halfwidth/cosdec, dec-halfwidth, dec+halfwidth)
+        beam_ug = liteMap.upgradePixelPitch(beam_sm , params['upgradePixelPitch'])
+        
+        if sigma != 0.:
+            beam_ug = beam_ug.convolveWithGaussian(fwhm= 2.35482*sigma)
+            beam_ug.data /= beam_ug.data.max()
+  
+        center_inds = numpy.where(beam_ug.data == beam_ug.data.max())
+        i0 = center_inds[0][0]
+        j0 = center_inds[1][0]
+        ra0, dec0 = beam_ug.pixToSky(j0, i0)
+        #We have to do this b/c the beam as created is not covolved with the pixel window
+        beam_ug_max = beam_ug.data.max()
+        beam_ug.data/=beam_ug_max 
+        beam_cen, beam_avg, beam_std = liteMap.binDataAroundPoint( beam_ug, ra0, dec0, bins, median=True )
+        
+        inds = numpy.where(cen <= params['fitRadius'])
+        a = numpy.matrix([beam_avg[inds], numpy.ones(len(inds[0]))])
+        suberr = err[inds[0][0]:inds[0][-1]+1,inds[0][0]:inds[0][-1]+1]
+        if params['useDiagonalCovariance']:
+            for i in xrange(suberr.shape[0]):
+                for j in xrange(suberr.shape[1]):
+                    if i != j:
+                        suberr[i,j]=0.
+        N = numpy.linalg.inv(suberr)
+        Na = numpy.dot(a,N)
+        aTNa = numpy.dot(Na, numpy.transpose(a))
+        aTNa_inv = numpy.linalg.inv(aTNa)
+        Nd = numpy.dot(N, avg[inds])
+        aTNd = numpy.dot(a, Nd)
+        coefs = numpy.dot(aTNd, aTNa_inv)
+        model = beam_avg*coefs[0,0] + coefs[0,1]
+        res= (avg[inds]-model[inds])
+        Nres = numpy.dot(res,N)
+        chi_sq = numpy.dot(res,Nres)
+        model /= ssm_ug.data.max()
+        if plot:
+            if type(plot) == str:
+                print 'adding beam-only model'
+                pylab.plot( beam_cen/60., model, plot, label= "sigma=%0.1f''; chi2=%0.1f (%d)" % (sigma*60, chi_sq, len(inds[0])))
+            else:
+                pylab.plot( beam_cen/60., model, label= "sigma=%0.1f''; chi2=%0.1f (%d)" % (sigma*60, chi_sq, len(inds[0])))
+        return chi_sq, len(inds[0]), beam_cen, model
+   
+    chi_sq = 1e6
+    sigma = 0.
+    print "  Beginning rough sigma search"
+    for _sigma in params['sigmas']:
+        _chi_sq, ndeg, bc, _m = fitModel(_sigma, plot = False)
+        print "    Sigma (arcsec), Chi_Sq: %20.1f, %20.1f" % (_sigma*60., _chi_sq)
+        if chi_sq > _chi_sq:
+            chi_sq = _chi_sq
+            sigma  = _sigma
+
+    fineRange = numpy.arange(sigma - params['nstep']*params['fineSearchStep'], 
+            sigma + (params['nstep']+1)*params['fineSearchStep'], params['fineSearchStep'])
+    #print "Fine range: ", fineRange
+    print "  Executing fine search around sigma %.1f." % (sigma*60.)
+    for _sigma in fineRange:
+        if _sigma < 0: 
+            continue
+        _chi_sq, ndeg, bc, _m = fitModel(_sigma, plot = True)
+        print "    Sigma (arcsec), Chi_Sq: %20.1f, %20.1f" % (_sigma*60., _chi_sq)
+        if chi_sq > _chi_sq:
+            chi_sq = _chi_sq
+            sigma  = _sigma
+    sourceFile.write(iau_name + "  %02d:%02d:%02d %+03d:%02d:%02d %10.1f %10.1f %10d\n" %  \
+            (ra_s + dec_s + (sigma*60., chi_sq, ndeg)))
+    sigmas.append( sigma*60 )
+    chi_sqs.append( chi_sq )
+    pylab.errorbar( cen/60., avg/ssm_ug.data.max(), numpy.sqrt(err[(range(len(avg)), \
+            range(len(avg)))][0])/ssm_ug.data.max(), fmt='k.')
+    pylab.legend()
+    pylab.ylim(2e-4, 1)
+    pylab.savefig("images/%s_Linear.png" % iau_name, overWrite=True)
+    pylab.ylim(1e-2, 1)
+    pylab.xlim(0,2.5)
+    pylab.savefig("images/%s_Zoom_Linear.png" % iau_name, overWrite=True)
+    pylab.ylim(1e-1, 1)
+    pylab.xlim(0,1.5)
+    pylab.savefig("images/%s_Zoom2_Linear.png" % iau_name, overWrite=True)
+    pylab.gca().set_yscale('log')
+    pylab.ylim(2e-4, 1)
+    pylab.savefig("images/%s.png" % iau_name, overWrite=True)
+    pylab.ylim(1e-2, 1)
+    pylab.xlim(0,2.5)
+    pylab.savefig("images/%s_Zoom.png" % iau_name, overWrite=True)
+    pylab.ylim(1e-1, 1)
+    pylab.xlim(0,1.5)
+    pylab.savefig("images/%s_Zoom2.png" % iau_name, overWrite=True)
+    pylab.clf()
+    pylab.figure(figsize=(4,4))
+    ax = pylab.subplot(111)
+    ax.set_aspect(4)
+    if params['plotSimpleBeam'] != False:
+        print "adding simple beam"
+        _chi_sq, ndeg, bc, _m = fitModel(0., plot = False)
+        pylab.plot( bc/60, _m , 'k--')
+    chi_sq, ndeg, bc, _m = fitModel(sigma, plot = False)
+    pylab.plot( bc/60, _m , 'k')
+    pylab.errorbar( cen/60., avg/ssm_ug.data.max(), numpy.sqrt(err[(range(len(avg)), \
+            range(len(avg)))][0])/ssm_ug.data.max(), fmt='k.')
+    pylab.gca().set_yscale('log')
+    pylab.xlim(0,4)
+    pylab.ylim(1e-3, 1)
+    pylab.xlabel('Radius (arcmin)')
+    pylab.savefig("images/%s.png" % iau_name)
+    pylab.savefig("images/%s.eps" % iau_name)
+    pylab.clf()
+
+
+sourceFile.write("# sigma mean = %10.1f\n" % numpy.mean(sigmas))
+sourceFile.write("# sigma std  = %10.1f\n" % numpy.std(sigmas))
+sourceFile.write("# chi_sq mean  = %10.1f\n" % numpy.mean(chi_sqs))
+sourceFile.close()

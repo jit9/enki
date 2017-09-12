@@ -1,0 +1,132 @@
+#!/usr/bin/env python
+import matplotlib
+matplotlib.use('Agg')
+from flipper import *
+import catalog
+import csFilter
+import csProfile
+
+import os
+import sys
+import time
+import multiprocessing as mp
+
+from scipy.ndimage.fourier import fourier_gaussian
+
+paramFile = sys.argv[1]
+params = flipperDict.flipperDict()
+params.readFromFile(paramFile)
+
+cat = catalog.read(params['catalog'])
+
+if not os.path.exists(params['outputdir']):
+    os.makedirs(params['outputdir'])
+
+sm = liteMap.liteMapFromFits(params['templateMap'])
+
+if  'keepOriginalData' in params and params['keepOriginalData'] == True:
+    pass
+else:
+    sm.data[:] = 0.0
+
+st = sm.copy()
+
+#create Templates
+templateDict = params['templates']
+for key in templateDict.keys():
+    if 'file' in templateDict[key].keys():
+        f = file(templateDict[key]['file'])
+        ell=[]
+        wl = []
+        for line in f:
+            fields = line[:-1].split()
+            ell.append(float(fields[0]))
+            wl.append(float(fields[1]))
+        trans = csFilter.makeTemplate(st, wl, ell, templateDict[key]['maxEll'])
+    elif 'trans' in templateDict[key].keys():
+        trans = liteMap.liteMapFromFits(templateDict[key]['trans'])
+    if 'gaussConv' in templateDict[key].keys():
+        sig = templateDict[key]['gaussConv']
+        if sig:
+            sig_pix = (sig/3600*numpy.pi/180.)/st.pixScaleX #From arcseconds to pix
+            temp = trans.data.copy()
+            fourier_gaussian(numpy.ones(trans.data.shape),abs(sig_pix),output=temp)
+            if sig > 0:
+                trans = liteMap.liteMapFromDataAndWCS(trans.data*temp,trans.wcs)
+            else:
+                trans = liteMap.liteMapFromDataAndWCS(trans.data/temp,trans.wcs)
+    templateDict[key] = trans
+
+pixarea = st.pixScaleX*st.pixScaleY
+st = templateDict['all']
+kx,ky = numpy.fft.fftfreq(st.data.shape[1]),numpy.fft.fftfreq(st.data.shape[0])
+arg_fac = -2*numpy.pi*numpy.complex(0,1)
+
+# Pixel Windowing
+size = 1.
+st.data[:] *= numpy.sinc(kx*size)*(numpy.sinc(ky*size))[:,numpy.newaxis]
+
+def doTemplate(catQueue,sumQueue):
+    ct = 0
+    out = numpy.zeros(st.data.shape,dtype=complex)
+    while True:
+        if catQueue.empty():
+            # This worker is done.
+            print("Killing extraneous worker.")
+            sumQueue.put((ct,out))
+            break
+        i, row = catQueue.get()
+        ct += 1
+        print "Processing %d/%d at (%.1f, %.1f)" % (i+1,len(cat),row['ra'],row['dec'])
+        if 'fluxMultiplier' in params and params['fluxMultiplier'] != None:
+            if fluxField != None:
+                scale = row[fluxField]/pixarea*params['fluxMultiplier']
+            else:
+                scale = params['fluxMultiplier']
+        else:
+            if fluxField != None:
+                scale = row[fluxField]/pixarea
+            else:
+                scale = 1.
+
+        # Shifts template to source location
+        x,y = st.skyToPix(row['ra'], row['dec'])
+        out = out + st.data*scale*(numpy.exp(arg_fac*kx*x)*(numpy.exp(arg_fac*ky*y)[:,numpy.newaxis]))
+
+def summer(sumQueue):
+    i = 0.
+    holder = numpy.zeros(st.data.shape,dtype=complex)
+    while True:
+        n,to_add = sumQueue.get()
+        holder = holder + to_add
+        i += n
+        print("Added %d/%d" % (i,len(cat)))
+        if i==len(cat):
+            break
+    sm.data = numpy.real(numpy.fft.ifft2(holder))
+    sm.writeFits(params['outputFilename'], overWrite=True)
+
+if params['fluxField']:
+    fluxField = params['fluxField']
+elif 'val_flux' in cat[0].keys():
+    fluxField = 'val_flux'
+else:
+    fluxField = None
+
+if (not 'nThreads' in params.keys()):
+    nthreads = 1
+else:
+    nthreads = params['nThreads']
+
+catalogQueue = mp.Queue()
+summingQueue = mp.Queue() #So we don't have to have everything in memory at once
+
+for i,row in enumerate(cat):
+    catalogQueue.put((i,row))
+
+# Start processes
+os.nice(10)
+
+mp.Process(target=summer, args=(summingQueue,)).start()
+for i in range(nthreads):
+    mp.Process(target=doTemplate, args=(catalogQueue,summingQueue)).start()

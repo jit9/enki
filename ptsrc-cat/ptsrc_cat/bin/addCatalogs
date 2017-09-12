@@ -1,0 +1,20 @@
+#!/bin/env python
+
+import catalog
+import optparse
+
+usage = "addCatalogs catalog1 catalog2... catalogN"
+parser = optparse.OptionParser(usage)
+parser.add_option("-o","--outPath",dest="outPath")
+options, args = parser.parse_args()
+
+
+cat0 = catalog.read(args[0])
+
+for cat1_name in args[1:]:
+    cat1 = catalog.read(cat1_name)
+    for row in cat1:
+        cat0.append(row)
+
+cat0.write("%s.pickle" % options.outPath)
+cat0.writeASCII("%s.txt" % options.outPath)

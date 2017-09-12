@@ -1,0 +1,29 @@
+#!/bin/env python
+
+import catalog
+import sys
+import optparse
+
+usage = "sortCatalog --reverse[-r] -o catalog column"
+parser = optparse.OptionParser(usage)
+parser.add_option("-o","--outPath",dest="outPath")
+parser.add_option("-r","--reverse",dest="reverse",action="store_true", help="reverse sort.",
+                    default = False)
+options, args = parser.parse_args()
+
+catname = args[0]
+col = args[1]
+
+try:
+    cat  = catalog.readFromPickleFile(catname)
+except:
+    cat = catalog.readFromASCIIFile(catname)
+
+cat.sortBy(col)
+
+if options.reverse:
+    cat.reverse()
+
+cat.write("%s.pickle" % options.outPath)
+cat.writeASCII("%s.txt" % options.outPath)
+

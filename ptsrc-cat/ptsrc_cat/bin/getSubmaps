@@ -1,0 +1,20 @@
+#!/bin/env python
+
+from flipper import *
+
+paramFile = sys.argv[1]
+params = flipperDict.flipperDict()
+params.readFromFile(paramFile)
+
+
+if not os.path.exists(params['outDir']):
+    os.makedirs(params['outDir'])
+
+mapDict = params['mapDict']
+
+for mapName in mapDict.keys():
+    m = liteMap.liteMapFromFits("%s/%s" % (mapDict[mapName]['dir'], mapDict[mapName]['name']))
+    sm = m.selectSubMap(*params['submap'])
+    if mapDict[mapName]['sim']:
+        sm.convertToMicroKFromJyPerSr(mapDict[mapName]['freq'])
+    sm.writeFits("%s/%s" % (params['outDir'], mapName), overWrite=True)

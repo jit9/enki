@@ -1,0 +1,29 @@
+#!/usr/bin/env python
+import matplotlib
+matplotlib.use('Agg')
+from flipper import *
+import catalog
+import astLib
+
+paramFile = sys.argv[1]
+params = flipperDict.flipperDict()
+params.readFromFile(paramFile)
+
+if params['catalogPickle'] != None:
+    cat = catalog.readFromPickleFile(params['catalogPickle'])
+elif params['catalogASCII'] != None:
+    cat = catalog.readFromASCIIFile(params['catalogASCII'])
+else:
+    raise ValueError("No catalog specified in catalogPickle or catalogASCII parameters")
+
+mp = liteMap.liteMapFromFits(params["map"])
+ca = liteMap.getCoordinateArrays(mp)
+
+for row in cat:
+    print "Smearing location ra,dec = (%.1f, %.1f)" % (row['ra'], row['dec'])
+    theta = liteMap.getRadiusAboutPoint(mp, row['ra'], row['dec'], coordinateArrays = ca)
+    inds = numpy.where(theta < params['smearRadius'])
+    avg = mp.data[inds].mean()
+    mp.data[inds] = avg
+
+mp.writeFits(params['outmap'], overWrite=True)

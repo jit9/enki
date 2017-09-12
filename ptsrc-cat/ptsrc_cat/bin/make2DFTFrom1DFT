@@ -1,0 +1,33 @@
+#!/bin/env python
+
+from flipper import *
+import csFilter
+
+params = flipperDict.flipperDict()
+params.readFromFile(sys.argv[1])
+
+f = file(params['spectrum1D'])
+ell=[]
+wl = []
+for line in f:
+    fields = line[:-1].split()
+    ell.append(float(fields[0]))
+    wl.append(float(fields[1]))
+
+ell = numpy.array(ell)
+wl  = numpy.array(wl)
+wl /= (ell+1.)*ell/(2*numpy.pi) # data is in \ell(\ell+1)/2pi units
+ell = numpy.array([0.,1.] + ell.tolist())
+wl  = numpy.array([0., wl[0]] + wl.tolist())
+
+# Translate C_l to 2D
+m = liteMap.liteMapFromFits(params['map'])
+m.data[:] = 0.
+maxL = params['maxEll']
+m = csFilter.makeTemplate( m, wl, ell, maxL)
+
+# Write out
+print "fft map var =",  m.data.sum()/(m.Nx*m.Ny)/m.pixScaleX/m.pixScaleY
+m.writeFits(params['output'], overWrite = True)
+
+

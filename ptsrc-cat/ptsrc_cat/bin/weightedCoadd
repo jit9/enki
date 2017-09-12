@@ -1,0 +1,33 @@
+#! /usr/local/anaconda/bin/python
+
+from astLib import astWCS
+from flipper import *
+
+params = flipperDict.flipperDict()
+params.readFromFile(sys.argv[1])
+
+m_tot = None
+w_tot = None
+
+for i in xrange(len(params['mapFiles'])):
+    print "Adding %s" % (params['mapFiles'][i])
+    m = liteMap.liteMapFromFits("%s/%s" % (params['dataDir'], params['mapFiles'][i]))
+    if 'calibration' in params.keys() and params['calibration'] != None:
+        m.data *= params['calibration'][i]
+    w = liteMap.liteMapFromFits("%s/%s" % (params['dataDir'], params['weightFiles'][i]))
+    if m_tot == None:
+        m_tot = m
+        w_tot = w
+    else:
+       inds = numpy.where(w.data != 0)
+       inds_tot = numpy.where(w_tot.data != 0)
+       m_tot.data[inds_tot] *= w_tot.data[inds_tot]
+       m_tot.data[inds] += m.data[inds]*w.data[inds]
+       #print 'nansearch_0', m_tot.data[338,10754]
+       w_tot.data += w.data
+       inds_final = numpy.where(w_tot.data != 0.)
+       m_tot.data[inds_final] /= w_tot.data[inds_final]
+    #print 'nansearch', m_tot.data[338,10754]
+
+m_tot.writeFits("%s.fits" % params['output'], overWrite=True)
+w_tot.writeFits("%s_weights.fits" % params['output'], overWrite=True)

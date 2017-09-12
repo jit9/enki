@@ -1,0 +1,28 @@
+#!/bin/env python
+
+#
+# For adding a calibration onto a catalog from makeCatalog
+#
+
+import catalog
+from flipper import flipperDict
+import optparse
+
+usage = "calibrateCatalog -o outPath catalog calibration"
+parser = optparse.OptionParser(usage)
+parser.add_option("-o","--outPath",dest="outPath", default = False)
+options, args = parser.parse_args()
+
+catName = args[0]
+calibration = args[1]
+
+cat = catalog.read(catName)
+
+for row in cat:
+    row['val'] *= float(calibration)
+    row['err'] *= float(calibration)
+    row['val_flux'] *= float(calibration)
+    row['err_flux'] *= float(calibration)
+
+cat.write("%s.pickle" % options.outPath)
+cat.writeASCII("%s.txt" % options.outPath)

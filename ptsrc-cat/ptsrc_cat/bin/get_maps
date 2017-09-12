@@ -1,0 +1,34 @@
+#!/usr/local/anaconda/bin/python
+
+from astLib import astWCS
+from flipper import *
+import numpy as np
+#maybe one day put in a proper
+m = liteMap.liteMapFromFits(sys.argv[1])
+w = liteMap.liteMapFromFits(sys.argv[2])
+try:
+    bt = liteMap.liteMapFromFits(sys.argv[3])
+except IndexError: #may not have a beam file
+    bt = None
+    pass
+
+print np.shape(m.data)
+print np.shape(w.data)
+
+#m.data = m.data[0]
+#w.data = w.data[0][0]
+#inds = numpy.where(w.data<0)
+#inds = inds[0]
+
+#print np.shape(inds)
+#m.data[inds] = 0.
+#w.data[inds] = 0.
+#if bt != None:
+#    bt.data[inds] = 0.
+#    if numpy.mean(bt.data) < 0:
+#        m.data -= bt.data
+#    else:
+#        m.data += bt.data
+
+m.writeFits('data.fits', overWrite=True)
+w.writeFits('weights.fits', overWrite=True)

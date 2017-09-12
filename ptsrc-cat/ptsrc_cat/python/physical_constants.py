@@ -1,0 +1,14 @@
+c_light = 299792458 # m/s
+m_e = 9.10938188e-31 # kg
+k_b = 1.3806503e-23 # J/K
+T_cmb = 2.726 # K
+q_e = 1.602176463e-19 # C
+h_planck = 6.626068e-34 # m^2 kg/s (J/Hz)
+sigma_t = 6.6524586e-29 # m^2 (Thomson cross section)
+m_p   = 1.67262158e-27 #kg
+m_e   = 9.10938188e-31 #kg
+m_sun =  1.98892e30    #kg
+Mpc = 3.08568025e22    #m
+q_e = 1.60217646e-19   #C
+G = 6.67300e-11 # m3 kg-1 s-2
+eta = 6.165e-10 # ratio of protons to photons

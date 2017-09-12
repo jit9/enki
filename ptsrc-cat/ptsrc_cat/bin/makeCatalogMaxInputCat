@@ -1,0 +1,476 @@
+#!/bin/env python
+
+from flipper import *
+import csFilter
+import csGroup
+import catalog
+import csProfile
+
+from scipy.ndimage.fourier import fourier_gaussian
+
+paramFile = sys.argv[1]
+params = flipperDict.flipperDict(paramFile)
+params.readFromFile(paramFile)
+
+
+fout = file('makeCatalog.stats', 'w')
+
+etcDir = "etc"
+if not os.path.exists(etcDir):
+    os.makedirs(etcDir)
+
+mapDir = "maps"
+if not os.path.exists(mapDir):
+    os.makedirs(mapDir)
+
+thumbnailDir = "%s/thumbnails" % mapDir
+if not os.path.exists(thumbnailDir):
+    os.makedirs(thumbnailDir)
+
+catDir = "catalogs"
+if not os.path.exists(catDir):
+    os.makedirs(catDir)
+
+subcatDir = "%s/subcatalogs" % catDir
+if not os.path.exists( subcatDir ):
+    os.makedirs(subcatDir)
+
+def printTime( then ):
+    now = time.time()
+    print "Time Elapsed = %s sec." % (now - then)
+    return now
+
+print "Initializing..."
+then = time.time()
+
+##############################################################
+#
+# Read in the data
+#
+##############################################################
+
+#Read in the data and associated weight (Nobs)
+if 'inputDir' in params and not params['inputDir'] in [None,'']:
+    data = liteMap.liteMapFromFits("%s/%s" % (params['inputDir'], params['data']))
+else:
+    data = liteMap.liteMapFromFits( params['data'] )
+pixArea = data.pixScaleX*data.pixScaleY
+zeromap = data.copy()
+zeromap.data[:] = 0.
+
+if 'inputDir' in params and not params['inputDir'] in [None,'']:
+    weight = liteMap.liteMapFromFits("%s/%s" % (params['inputDir'], params['weight']))
+else:
+    weight = liteMap.liteMapFromFits( params['weight'] )
+
+normalizedWeight = numpy.sqrt(weight.data/weight.data.max())
+
+#For the matched filter: read in a signal transform
+print "  Getting signal transform"
+if params["signalTransform"] != None:
+    m = liteMap.liteMapFromFits(params["signalTransform"])
+    signalTransform = m.data
+elif params["signalTransform1D"] != None:
+    if os.path.exists("maps/signalTransform.fits"):
+        m = liteMap.liteMapFromFits("maps/signalTransform.fits")
+        signalTransform = m.data
+    else:
+        f = file(params["signalTransform1D"])
+        ell=[]
+        wl = []
+        for line in f:
+            fields = line[:-1].split()
+            ell.append(float(fields[0]))
+            wl.append(float(fields[1]))
+        #Assumes ft of signal is normalized to unity
+        m = csFilter.makeTemplate(zeromap, wl, ell, params["signalTransform1DMaxEll"])
+        if 'sourceModel' in params.keys() and params['sourceModel'] != None:
+            m.data *= csFilter.templateFromProfile(m, eval(params['sourceModel']), params['sourceModelParameters'], maxEll=params["signalTransform1DMaxEll"]).data
+        m.data /= m.data.sum()/m.Nx/m.Ny #renormalize such that spatial profile is unit normalized
+        signalTransform = m.data
+        m.writeFits("maps/signalTransform.fits", overWrite = True)
+elif params["signalTransformModel"] != None:
+    if os.path.exists("maps/signalTransform.fits"):
+        m = liteMap.liteMapFromFits("maps/signalTransform.fits")
+        signalTransform = m.data
+    else: 
+        paramdict = params['signalTransformParameters']
+        gaussConv = paramdict.pop('gaussConv')
+        if params["signalTransformModelType"] == 'profile':
+            m = csFilter.templateFromProfile(zeromap, eval(params['signalTransformModel']),
+                                             paramdict,
+                                             maxEll=params["signalTransformModelMaxEll"])
+        else:
+            paramdict['rescale'] = 1./paramdict['rescale'] # Fourier Scale theorem
+            m = csFilter.templateFromFourierProfile(zeromap, eval(params['signalTransformModel']),
+                                                    paramdict,
+                                                    maxEll=params["signalTransformModelMaxEll"])
+            if params["signalTransformModelType"] == 'window':
+                m.data = numpy.sqrt(m.data)
+            elif params["signalTransformModelType"] != 'trans':
+                print "    signalTransformModelType not recognized, assumed trans"
+    
+        if gaussConv:
+            sig_pix_x = abs((gaussConv/3600*numpy.pi/180.)/m.pixScaleX)
+            sig_pix_y = abs((gaussConv/3600*numpy.pi/180.)/m.pixScaleY)
+            temp = m.data.copy()
+            fourier_gaussian(numpy.ones(m.data.shape),(sig_pix_y,sig_pix_x),output=temp)
+            if gaussConv > 0:
+                m.data *= temp # Convolve
+            else:
+                m.data /= temp # Deconvolve
+            
+        if 'sourceModel' in params.keys() and params['sourceModel'] != None:
+            m.data *= csFilter.templateFromProfile(m, eval(params['sourceModel']),
+                                                   params['sourceModelParameters'],
+                                                   maxEll=params["signalTransform1DMaxEll"]).data
+    
+        m.data /= m.data.sum()/m.Nx/m.Ny #renormalize such that spatial profile is unit normalized
+        signalTransform = m.data
+        m.writeFits("maps/signalTransform.fits", overWrite = True)
+else:
+    signalTransform = None
+
+if signalTransform != None:
+    sa = signalTransform[0,0]*m.pixScaleX*m.pixScaleY
+    print("    Solid Angle: %.2f nsr" % (sa*1.e9))
+    if (not ('solidAngle' in params.keys()) or params['solidAngle'] == None):
+        params['solidAngle'] = sa
+
+#For the matched filter: read in a noise spectrum
+print "  Getting noise spectrum"
+if params["noiseSpectrum"] !=None:
+    m = liteMap.liteMapFromFits(params["noiseSpectrum"])
+    noiseSpectrum = m.data
+elif 'noiseSpectrum1D' in params.keys() and params["noiseSpectrum1D"] != None:
+    f = file(params["noiseSpectrum1D"])
+    ell=[]
+    wl = []
+    for line in f:
+        fields = line[:-1].split()
+        ell.append(float(fields[0]))
+        wl.append(float(fields[1]))
+    m = csFilter.makeTemplate( zeromap, wl, ell, params["noiseSpectrum1DMaxEll"] )
+    noiseSpectrum = m.data
+else:
+    noiseSpectrum = None
+
+print "  Getting extra filter"
+if params['extraFilter'] != None:
+    m = liteMap.liteMapFromFits(params["extraFilter"])
+    extraFilt = m.data
+elif params["extraFilter1D"] != None:
+    if os.path.exists("maps/extraFilter.fits"):
+        m = liteMap.liteMapFromFits("maps/extraFilter.fits")
+        extraFilt = m.data
+    else:
+        f = file(params["extraFilter1D"])
+        ell=[]
+        wl = []
+        for line in f:
+            fields = line[:-1].split()
+            ell.append(float(fields[0]))
+            wl.append(float(fields[1]))
+        m = csFilter.makeTemplate( zeromap, wl, ell, params["extraFilter1DMaxEll"] )
+        m.writeFits("maps/extraFilter.fits")
+        extraFilt = m.data
+else:
+    extraFilt = None
+
+#
+# Create a template for later CLEANing
+#
+
+if not os.path.exists("maps/cleanTemplate.fits") and params['makeCleanTemplate']:
+    print "  Creating CLEAN Template"
+    cleanTemplate = m.copy()
+    cleanTemplate.data[:] = 0.
+    cleanTemplate.data[m.Ny/2, m.Nx/2] = 1.
+    fc = numpy.fft.fft2(cleanTemplate.data)
+    fc *= signalTransform
+    cleanTemplate.data[:] = (numpy.real(numpy.fft.ifft2(fc)))[:]
+
+
+
+##############################################################
+#
+# Filter map and extract groups of bright pixels
+#
+##############################################################
+
+print "Finding sources"
+
+if params['submaps'] == None:
+    submaps = [None]
+else:
+    submaps = params['submaps']
+
+groupsMasterList = csGroup.groupList()
+area = 0
+for sm in submaps:
+
+    if sm == None: # do the whole map
+        mapToFilter = data.copy()
+        _normalizedWeight = normalizedWeight
+        suffix = ""
+        sm = "whole map"
+    else:          # do a submap
+        mapToFilter = data.selectSubMap(*sm)
+        _weight = weight.selectSubMap(*sm)
+        _normalizedWeight = numpy.sqrt(_weight.data/_weight.data.max())
+        suffix = "_%.1f_%.1f_%.1f_%.1f" % ( sm[0], sm[1], sm[2], sm[3] )
+
+    gpn = "%s/groups%s.pickle" % (etcDir, suffix)
+    fmn = "%s/filtered%s.fits" % (mapDir, suffix)
+    if not os.path.exists(gpn):
+       
+        then = printTime(then)
+        print "  Filtering %s" % str(sm)
+
+        if  'paddedPixels' in params.keys():
+            dpadx,dpady = params['paddedPixels']
+        else:
+            dpadx,dpady = 0,0
+
+        if not os.path.exists( fmn ):
+            
+            if params['forceGaussian']:
+                print '    Applying gaussian filter with fwhm %f' % (params['signalFWHM'])
+            
+            dpadx/=2
+            dpady/=2
+            nb = float(params['excludeBorderPixels'])/2
+            inds = numpy.arange(nb, dtype=float)
+            wind = 0.5*(1+numpy.sin((inds-nb/2)/nb*numpy.pi*(nb+1)/nb))
+            windRev = wind[::-1]
+            mapToFilter.data[dpady:dpady+nb,:] *= wind[:,numpy.newaxis]
+            mapToFilter.data[-dpady-nb:-dpady if dpady else None,:] *= windRev[:,numpy.newaxis]
+            mapToFilter.data[:,dpadx:dpadx+nb] *= wind[numpy.newaxis,:]
+            mapToFilter.data[:,-dpadx-nb:-dpadx if dpadx else None] *= windRev[numpy.newaxis,:]
+            mapToFilter.writeFits("maps/prefilterWindowed.fits", overWrite=True)
+            if params['verticalFilterHalfwidthEll'] > 0:
+                print '    Applying vertical filter with halfwidth %f' % (params['verticalFilterHalfwidthEll'])
+                csFilter.filterHorizontalLinesFourier( mapToFilter, hw = params['verticalFilterHalfwidthEll'] )
+                if not os.path.exists("maps/cleanTemplate.fits") and params['makeCleanTemplate']:
+                    csFilter.filterHorizontalLinesFourier( cleanTemplate, hw = params['verticalFilterHalfwidthEll'] )
+            mapToFilter.data *= _normalizedWeight
+            filteredMap = csFilter.optimalFilter(mapToFilter, fwhm = params['signalFWHM'], 
+                    signalTransform = signalTransform, noiseSpectrum = noiseSpectrum, 
+                    extraFilt = extraFilt , forceGaussian = params['forceGaussian'])
+            if not os.path.exists("maps/cleanTemplate.fits") and params['makeCleanTemplate']:
+                print "    Filtering CLEAN Template"
+                cleanTemplate = csFilter.optimalFilter(cleanTemplate, fwhm = params['signalFWHM'], 
+                    signalTransform = signalTransform, noiseSpectrum = noiseSpectrum, 
+                    extraFilt = extraFilt , forceGaussian = params['forceGaussian'])
+                cleanTemplate.writeFits("maps/cleanTemplate.fits")
+            filteredMap.writeFits( "%s/filteredWeighted%s.fits" % (mapDir, suffix), overWrite=True )
+            indsWeightZero = numpy.where(_normalizedWeight != 0)
+            filteredMap.data[indsWeightZero] /= _normalizedWeight[indsWeightZero]
+            filteredMap.writeFits( fmn, overWrite=True )
+        else:
+            print "    Found filtered map at %s" % (fmn)
+            filteredMap = liteMap.liteMapFromFits(fmn)
+
+        
+        then = printTime(then)
+
+        print "  Extracting %s" % str(sm)
+
+        #Mask trouble spots (detection mask) and boundaries (excludeBorderPixels)
+        if params['detectionMask'] != None:
+            for m in params['detectionMask']:
+                print "masking", m
+                x1, y0 = filteredMap.skyToPix(m[0], m[2])
+                x0, y1 = filteredMap.skyToPix(m[1], m[3])
+                print x0, x1, y0, y1
+                filteredMap.data[y0:y1, x0:x1] = 0.
+        nb = params['excludeBorderPixels']
+        filteredMaskedMap = filteredMap.copy()
+        filteredMaskedMap.data[:dpady+nb,:] = 0.
+        filteredMaskedMap.data[-dpady-nb:,:] = 0.
+        filteredMaskedMap.data[:,:dpadx+nb] = 0.
+        filteredMaskedMap.data[:,-dpadx-nb:] = 0.
+        filteredMaskedMap.writeFits("%s/filteredDetectionMasked%s.fits" % (mapDir, suffix), overWrite=True)
+        flattened = filteredMaskedMap.data*_normalizedWeight
+        rms = flattened[numpy.where(filteredMaskedMap.data!=0)].std()
+        print "FLATTENED rms", rms
+        #rms = filteredMaskedMap.data[numpy.where(filteredMaskedMap.data!=0)].std()
+
+        inds = numpy.where(filteredMaskedMap.data !=0)
+        area += pixArea*len(inds[0])
+
+        #Check to see if there are any pixels above our SNR cutoff
+        if not True in (flattened > params['snrThreshold'] * rms):
+            print "No detections above snrThreshold"
+            sys.exit(1)
+
+        if not 'useInputCatalog' in params.keys() or not params['useInputCatalog']:
+            # Find groups of bright pixels
+            cf = csGroup.groupFinder(filteredMaskedMap, params['objectType'], params['snrThreshold'], 
+                    minPixPerGroup=params['minPixPerGroup'], weight = _normalizedWeight, rms = params['rms'] )
+            cf.findGroups()
+            cf.setRADecOfGroups()
+            if 'removeGroupsAroundGiantsRadius' in params.keys():
+                if params['removeGroupsAroundGiantsRadius'] >0:
+                    cf.removeGroupsAroundGiants(sig=60, rad=params['removeGroupsAroundGiantsRadius'])
+            else:
+                cf.removeGroupsAroundGiants(sig=60, rad=25)
+            cf.groups.save(gpn)
+            groups = cf.groups
+    else:
+        print "  Found previous %s pickle at %s" % (params['objectType'], gpn)
+        groups = csGroup.groupList()
+        groups.read(gpn)
+        filteredMap = liteMap.liteMapFromFits(fmn)
+        fmm = liteMap.liteMapFromFits("%s/filteredDetectionMasked%s.fits" % (mapDir,suffix))
+        inds = numpy.where(fmm.data != 0)
+        area += pixArea*len(inds[0])
+        flattened = fmm.data*_normalizedWeight
+        print inds
+        rms = flattened[inds].std()
+        print "FLATTENED rms", rms
+
+    if not 'useInputCatalog' in params.keys() or not params['useInputCatalog']:
+        groupsMasterList+=groups 
+
+if not 'useInputCatalog' in params.keys() or not params['useInputCatalog']:
+    if 'additionalGroups' in params and params['additionalGroups'] != None:
+        gpl = csGroup.groupList()
+        gpl.read(params['additionalGroups'])
+        print "  Including %d additional groups from %s" % (len(gpl), params['additionalGroups'])
+        groupsMasterList += gpl
+    
+    groupsMasterList.save("%s/extractedPixelGroupList.pickle" % etcDir)
+
+##############################################################
+#
+# 1. Go through pixel groups and find true flux and centers using
+#    fourier interpolation.
+# 2. Apply final calibration, if specified.
+# 3. Save catalogs
+#
+##############################################################
+fout.write('RMS = %10.3e' % rms)
+
+then = printTime(then)
+if not os.path.exists('catalogs/catalog.txt'):
+    print "Creating Catalog"
+    
+    if not 'useInputCatalog' in params.keys() or not params['useInputCatalog']:
+        cat = catalog.catalogFromGroupList(groupsMasterList)
+        cat.sortBy('s/n')
+        cat.reverse()
+    else:
+        cat = catalog.read(params['useInputCatalog'])
+        if 'val' not in cat.cols.keys():
+            cat.addCol('val', 'flux'         , len(cat.cols.keys()), float, '%10.3e', -999.)
+        if 'err' not in cat.cols.keys():
+            cat.addCol('err', 'signal to noise ratio', len(cat.cols.keys()), float, '%10.3e', -999.)
+    
+    
+    if 'val_flux' not in cat.cols.keys():
+        cat.addCol('val_flux', 'flux'         , len(cat.cols.keys()), float, '%10.3e', -999.)
+    if 'err_flux' not in cat.cols.keys():
+        cat.addCol('err_flux', 'Error on flux', len(cat.cols.keys()), float, '%10.3e', -999.)
+    
+    splitAngle = 180
+    def convertRA( ra, splitAngle=180 ):
+        if ra > splitAngle:
+            ra -= 360.
+        return ra
+    
+    hw = params['fluxReconstructionWindowHalfWidth']
+    m = filteredMap
+    i=0
+    for row in cat:
+        i+=1
+        print "Processing %d/%d at (%.1f, %.1f)" % ( i, len(cat), row['ra'], row['dec'] )
+        cosdec = numpy.cos(row['dec']*numpy.pi/180.)
+        epsilon = m.pixScaleY * 180/numpy.pi
+        ra  = convertRA( row['ra'] )
+        x0 = convertRA( m.x0)
+        x1 = convertRA( m.x1)
+        _x, _y = weight.skyToPix(ra, row['dec'])
+        w = weight.data[_y, _x]
+        if ra - hw/cosdec < x1:
+            ra0 = x1 + epsilon
+        else:
+            ra0 = ra - hw/cosdec
+        if ra + hw/cosdec > x0:
+            ra1 = x0 - epsilon
+        else:
+            ra1 = ra + hw/cosdec
+    
+        if row['dec'] - hw < m.y0:
+            dec0 = m.y0 + epsilon
+        else:
+            dec0 = row['dec'] - hw
+        if row['dec'] + hw > m.y1:
+            dec1 = m.y1 - epsilon
+        else:
+            dec1 = row['dec'] + hw
+
+        sm = m.selectSubMap(ra0, ra1, dec0, dec1)
+        if  'upgradePixelPitch' in params.keys():
+            usm = liteMap.upgradePixelPitch(sm, params['upgradePixelPitch'])
+        else:
+            usm = sm.copy()
+        usm2 = usm.selectSubMap( ra - 0.02/cosdec, ra + 0.02/cosdec, row['dec'] - 0.02, row['dec'] + 0.02 )
+        if not 'useInputCatalog' in params.keys() or not params['useInputCatalog']:
+            newval = usm2.data.max()
+            print "new val / old val =", newval/row['val']
+            row['s/n'] *= newval/row['val']
+            row['val'] = newval
+            row['val_flux'] = newval*params['solidAngle']
+            row['err_flux'] = row['err']*params['solidAngle']
+            ind = numpy.where( usm2.data == usm2.data.max() )
+            row['ra'], row['dec'] = usm2.pixToSky(ind[1][0], ind[0][0])
+        else:
+            #x, y = usm2.skyToPix(row['ra'], row['dec']) 
+            newval = usm2.data.max()
+            #row['val'] = usm2.data[y,x]
+            row['val'] = newval
+            row['err'] = rms*numpy.sqrt(weight.data.max()/w)
+            row['snr'] = numpy.abs(row['val'] / row['err'])
+            row['val_flux'] = row['val'] * params['solidAngle']
+            row['err_flux'] = row['err'] * params['solidAngle']
+    
+        if ('writeSubmaps' in params.keys() and params['writeSubmaps'] == True) or (not ('writeSubmaps' in params.keys())):
+            sm.writeFits("%s/original_%05.1f_%05.1f.fits" % (thumbnailDir, row['ra'], row['dec']) , overWrite=True)
+            usm.writeFits("%s/upgraded_%05.1f_%05.1f.fits" % (thumbnailDir, row['ra'], row['dec']) , overWrite=True)
+            usm2.writeFits("%s/upgradedSub_%05.1f_%05.1f.fits" % (thumbnailDir, row['ra'], row['dec']) , overWrite=True)
+   
+    #Add sexagesimal names
+    if not 'ra_s' in cat.cols.keys():
+        cat.addCol('ra_s' , 'right ascension in hh:mm:ss', 0, str, '%15s', '--')
+        cat.addCol('dec_s', 'declination in dd:mm:ss', 1, str, '%15s', '--')
+    for row in cat:
+        ra, dec, sign = catalog.convertRADecDegreesToSexagesimal(row['ra'], row['dec'])
+        row['ra_s']  = '%02d:%02d:%04.1f' % ( ra[0], ra[1], ra[2] )
+        row['dec_s'] = '%s%02d:%02d:%04.1f' % ( sign, dec[0], dec[1], dec[2] )
+   
+    #Add IAU name    
+    if 'id_prefix' in params.keys():
+        if 'id' not in cat.cols.keys():
+            cat.addCol('id', 'IAU Name', 0, str, '%15s', '--')
+            for row in cat:
+                row['id'] = params['id_prefix'] +  ' J%s%s%s%s%s%s' % tuple(row['ra_s'].split(':')+ row['dec_s'].split(':'))
+   
+    #Include the weights in the catalog (seems adhoc -- this might be a candidate for chopping)
+    if 'includeWeightInCatalog' in params.keys() and params['includeWeightInCatalog'] !=None:
+        name = params['includeWeightInCatalog'][0]
+        desc = params['includeWeightInCatalog'][1]
+        multiplier = params['includeWeightInCatalog'][2]
+        cat.addCol( name, desc, cat.ncol, float, "%10e", -999.)
+        for row in cat:
+            x,y = weight.skyToPix(row['ra'], row['dec'])
+            row[name] = weight.data[y,x]*multiplier
+    
+    cat.writeRegionFile("%s/catalog.reg" % catDir)
+    cat.write("%s/catalog.pickle" % catDir)
+    cat.writeASCII("%s/catalog.txt" % catDir)
+    
+else:
+    print "Found catalog/catalog.txt -- nothing to do"
+
+fout.close()

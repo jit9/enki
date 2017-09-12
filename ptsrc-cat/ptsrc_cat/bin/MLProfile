@@ -1,0 +1,137 @@
+#!/usr/bin/env python
+
+from flipper import *
+import pickle
+import scipy
+import catalog
+import csFilter
+import astLib
+
+params = flipperDict.flipperDict()
+params.readFromFile(sys.argv[1])
+
+cat = catalog.read(params['catalog'])
+m = liteMap.liteMapFromFits(params['map'])
+#m.convertToMicroKFromJyPerSr(148.)
+
+if not os.path.exists(params['outputdir']):
+    os.makedirs(params['outputdir'])
+
+#Beam
+f = file(params["beamProfile"])
+ell=[]
+wl = []
+for line in f:
+    fields = line[:-1].split()
+    ell.append(float(fields[0]))
+    wl.append(float(fields[1]))
+
+for row in cat:
+    dir = "%s/%s" % (params['outputdir'], row[params['IDField']])
+    if not os.path.exists(dir):
+        os.makedirs(dir)
+    cosdec = numpy.cos(row['dec']*numpy.pi/180.)
+    dx = params['submapWidth']/2./cosdec/60
+    dy = params['submapWidth']/2./60.
+    sm = m.selectSubMap(row['ra']-dx, row['ra']+dx, row['dec']-dy, row['dec']+dy, safe=True)
+    sm.writeFits('%s/%s.fits' % (dir,row[params['IDField']]), overWrite=True)
+    print 'sm shape', sm.data.shape
+
+    #get background
+    if params['estimateNoise']:
+        noiseMap = sm.copy()
+        noise = noiseMap.copy() 
+        noise.data[:] = 0.
+        j,i = m.skyToPix(sm.x0, sm.y0)
+        j = int(j+.5)
+        i = int(i+.5)
+        l = 0
+        for k in xrange(1,5):
+            try:
+                noiseMap.data[:] = m.data[i:i+sm.Ny, j+k*sm.Nx:j+sm.Nx+k*sm.Nx]
+            except:
+                print 'trouble; mismatch (noiseMap, copyMap)=', noiseMap.data.shape, m.data[i:i+sm.Ny, j+k*sm.Nx:j+sm.Nx+k*sm.Nx].shape
+                continue
+            l +=1
+            p2D = fftTools.powerFromLiteMap(noiseMap, applySlepianTaper = True)
+            inds = numpy.where(p2D.modLMap < 500)
+            ft = p2D.powerMap
+            ft /= sm.pixScaleX*sm.pixScaleY/sm.Nx/sm.Ny
+            # eliminate "hot spots"
+            med = numpy.median(ft)
+            ft[numpy.where(ft< med/10)] = med/10
+            ft[numpy.where(ft> 10*med)] = 10*med
+            # convolve filter with gaussian to smooth it
+            kernel_width = (1,1)  # width of gaussian kernal in sigma
+            ft = scipy.ndimage.gaussian_filter(ft, kernel_width)
+    	    noise.data[:] += ft
+        if l == 0: continue
+        noise.writeFits("%s/noise.fits" % (dir), overWrite=True)
+        noise.data /= l
+        noise_inv = 1/noise.data
+        noise_inv[inds] = 0.
+        noise_inv = noise_inv.ravel()
+        noise_inv = numpy.diag(noise_inv)
+        noise = numpy.diag(noise.data.ravel())
+    else:
+        noise = numpy.diag(numpy.ones(sm.Nx*sm.Ny))
+        noise_inv = noise.copy()
+
+    #Get Beam
+    beam = csFilter.makeTemplate( sm, wl, ell, params["maxEll"] )
+    beam_2D = beam.copy()
+    beam = beam.data.ravel()
+
+    #Compute FTs of annulli B for inverse covariance matrix M = B^T N^-1 B
+    ft = fftTools.fftFromLiteMap(sm, applySlepianTaper = True) 
+    ft = ft.kMap.ravel()
+    theta = liteMap.getRadiusAboutPoint(sm, row['ra'], row['dec'])*numpy.pi/180.
+    ring = sm.copy()
+    ring_fts = []
+    for i in xrange(len(params['bins'])-1):
+        ring.data[:] = 0.
+        bin0 = params['bins'][i]*numpy.pi/180/60
+        bin1 = params['bins'][i+1]*numpy.pi/180/60
+        inds = numpy.where((theta>=bin0)*(theta<bin1))
+        ring.data[inds] = 1.
+        ft_0 = fftTools.fftFromLiteMap(ring).kMap*beam_2D.data
+        ring.data = numpy.fft.ifft2(ft_0)
+        ring_fts.append(fftTools.fftFromLiteMap(ring, applySlepianTaper = True).kMap.ravel())
+        #ring_fts[i] *= beam
+    ring_fts = numpy.array(ring_fts)
+    M = numpy.dot(numpy.conj(ring_fts), numpy.dot(noise_inv, numpy.transpose(ring_fts)))
+    M_inv = numpy.linalg.inv(M)
+    cov = M_inv
+    rhs = numpy.dot(numpy.conj(ring_fts), numpy.dot(noise_inv, ft))
+    ans = numpy.dot(M_inv, rhs)
+
+    # Write out profile, covariance, and bin centers
+    numpy.savetxt("%s/%s_MLProfile.txt"% (dir, row[params['IDField']]), ans)
+    numpy.savetxt("%s/%s_MLProfileCov.txt"% (dir, row[params['IDField']]), cov)
+    bins = (numpy.array(params['bins'][:-1]) + numpy.array(params['bins'][1:]))/2.
+    numpy.savetxt("%s/%s_MLProfileBins.txt"% (dir, row[params['IDField']]), bins)
+
+    print "Y estimate"
+    y = (numpy.real(ans) - numpy.real(ans)[-1])*catalog.deltaT2y(148.)
+    yDOmega = y*numpy.pi*(numpy.array(params['bins'])[1:]**2 - \
+            numpy.array(params['bins'])[0:-1]**2)
+    Y = yDOmega.sum()
+    print "Y estimate", Y, row['TSZvir']
+    # Make some plots...
+    pylab.errorbar(bins, numpy.real(ans), numpy.sqrt(numpy.real(numpy.diag(cov))))
+    if params['OtherNameField']:
+        pylab.title("%s (%s)" % (row[params['IDField']], row[params['OtherNameField']]))
+    else:
+        pylab.title("%s" % (row[params['IDField']]))
+    pylab.ylabel('Binned Profile (%s)' % params['units'])
+    pylab.xlabel('Radius (arcmin)')
+    pylab.savefig("%s/%s_profile.png" % (dir, row[params['IDField']]))
+    pylab.clf()
+    astLib.astPlots.ImagePlot(sm.data, sm.wcs, cutLevels=[sm.data.min(), sm.data.max()])
+    if params['OtherNameField']:
+        pylab.title("%s (%s)" % (row[params['IDField']], row[params['OtherNameField']]))
+    else:
+        pylab.title("%s" % (row[params['IDField']]))
+    pylab.colorbar()
+    pylab.savefig("%s/%s_map.png" % (dir, row[params['IDField']]))
+    pylab.clf()

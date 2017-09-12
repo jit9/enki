@@ -1,0 +1,41 @@
+#!/bin/env python
+
+from flipper import *
+import catalog
+import astLib
+
+paramFile = sys.argv[1]
+params = flipperDict.flipperDict()
+params.readFromFile(paramFile)
+
+if params['catalogPickle'] != None:
+    cat = catalog.readFromPickleFile(params['catalogPickle'])
+elif params['catalogASCII'] != None:
+    cat = catalog.readFromASCIIFile(params['catalogASCII'])
+else:
+    raise ValueError("No catalog specified in catalogPickle or catalogASCII parameters")
+
+mp = liteMap.liteMapFromFits(params["map"])
+mp.info()
+
+mp.data = params['scaleData'](mp.data)
+
+#mp.plot(colBarShrink=0.2, **{'axesLabels':'sexagesimal'})
+pylab.figure(figsize = [6, 2])
+im = astLib.astPlots.ImagePlot(mp.data, mp.wcs, cutLevels = params['cutLevels'], axes = [.15,.1,.8,.8], axesFontSize=8., colorMapName=params['colorMapName'] )
+
+cb = pylab.colorbar(orientation='horizontal', aspect=60, pad=.3)
+cb.set_label("Sensitivity [mJy]", fontsize=8)
+for t in cb.ax.get_xticklabels():
+         t.set_fontsize(8)
+
+area = cat.arrayFromCol('val_flux')
+x    = cat.arrayFromCol('ra')
+y    = cat.arrayFromCol('dec')
+
+#im.addPlotObjects(x, y, 'sources', color='white', size=800, width=3)#, size=area)
+for row in cat:
+    im.addPlotObjects([row['ra']], [row['dec']], row['id'], color=params['symbolColor'], shape=params['symbolShape'], size=500, width=numpy.log10(10000*row['val_flux']))#, size=area)
+#pylab.scatter(x,y,s=area, marker='o')
+
+pylab.savefig("catalog.eps")

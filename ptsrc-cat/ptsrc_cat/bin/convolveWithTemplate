@@ -1,0 +1,23 @@
+#!/bin/env python
+
+from flipper import *
+import csFilter
+
+try:
+    inFile = sys.argv[1]
+    template = sys.argv[2]
+    max_ell = float(sys.argv[3])
+except:
+    print "usage: convolveWithTemplate map template max_ell"
+    print "beam templates can be found in the data directory of the compactSources distribution"
+    print "max_ell for the act beam templates is 39997"
+    raise
+
+m = liteMap.liteMapFromFits(inFile)
+
+ell, f_ell = numpy.transpose(numpy.loadtxt(template))
+t = csFilter.makeTemplate( m, f_ell, ell, max_ell )
+ft = numpy.fft.fft2(m.data)
+ft *= t.data
+m.data = numpy.real(numpy.fft.ifft2(ft))
+m.writeFits("%s_convolved.fits" % inFile[:-5])

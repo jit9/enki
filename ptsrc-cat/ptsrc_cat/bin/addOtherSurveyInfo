@@ -1,0 +1,163 @@
+#!/bin/env python
+from flipper import *
+import csPlot
+import catalog
+import csGroup
+import scipy
+
+paramFile = sys.argv[1]
+params = flipperDict.flipperDict()
+params.readFromFile(paramFile)
+
+
+if params['catalogPickle'] != None:
+    cat = catalog.readFromPickleFile(params['catalogPickle'])
+elif params['catalogASCII'] != None:
+    cat = catalog.readFromASCIIFile(params['catalogASCII'])
+else:
+    raise ValueError("No catalog specified in catalogPickle or catalogASCII parameters")
+
+#If there is no decimal ra/dec columns; make them
+if 'longitudeColumn' in params.keys() and params['longitudeColumn'] != None:
+    lon = params['longitudeColumn']
+    lat = params['latitudeColumn']
+else:
+    print "addOtherSurveyInfo warning: Assuming latitude and longitude columns are named 'ra' an 'dec'"
+    lon = 'ra'
+    lat = 'dec'
+    if not 'ra' in cat.cols.keys():
+        cat.addCol( 'ra',  'right ascension in decimal', len(cat.cols.keys()), float, "%10e", -999. ) 
+        cat.addCol( 'dec', 'declination decimal',        len(cat.cols.keys()), float, "%10e", -999. ) 
+        for row in cat:
+            row['ra'], row['dec']  = catalog.convertSexagesimalToRaDecDegrees(row['ra_s'], row['dec_s'])
+
+catDir = "catalogs"
+if not os.path.exists(catDir):
+    os.makedirs(catDir)
+
+###
+#
+# Analyze with Flux at other radio frequencies
+#
+##
+
+cat.addCol( 'other_catalogs', 'List of associated catalog initials', len(cat.cols.keys()), str, "%10s", '--' ) 
+
+##### Coords
+
+limits = params['mapBoundaries']
+
+
+print "Adding Other Data from other Surveys to Catalog"
+
+#####
+
+for catEntry in params['otherCatalogs']:
+
+    try:
+        ocat = catalog.readFromASCIIFile(catEntry['path'])
+    except:
+        try:
+            ocat = catalog.readFromPickleFile(catEntry['path'])
+        except:
+            print "Could not read catalog at %s." % (catEntry['path'])
+            raise
+
+    if 'cols' in catEntry.keys():
+        for col in catEntry['cols']:
+            if 'defaultFmt' in ocat.cols[col]:
+                cat.addCol( "%s_%s" % (catEntry['name'], col), ocat.cols[col]['desc'], len(cat.cols.keys()), ocat.cols[col]['type'], \
+                    ocat.cols[col]['fmt'], ocat.cols[col]['default'], defaultFmt = ocat.cols[col]['defaultFmt']) 
+            else:
+                cat.addCol( "%s_%s" % (catEntry['name'], col), ocat.cols[col]['desc'], len(cat.cols.keys()), ocat.cols[col]['type'], \
+                    ocat.cols[col]['fmt'], ocat.cols[col]['default'])
+            print ocat.cols[col]['default']
+            print "%s_%s" % (catEntry['name'], col), cat.cols["%s_%s" % (catEntry['name'], col)]
+
+    diff = params['otherCatAssociationRadius'] # id sources with this distance (deg)
+    if 'dist' in catEntry.keys():
+        diff = catEntry['dist']
+
+    #If there is no decimal ra/dec columns; make them
+    if 'longitudeColumn' in catEntry.keys() and catEntry['longitudeColumn'] != None:
+        olon = catEntry['longitudeColumn']
+        olat = catEntry['latitudeColumn']
+    else:
+        olon = 'ra'
+        olat = 'dec'
+        if not 'ra' in ocat.cols.keys():
+            ocat.addCol( 'ra',  'right ascension in decimal', len(cat.cols.keys()), float, "%10e", -999. ) 
+            ocat.addCol( 'dec', 'declination decimal',        len(cat.cols.keys()), float, "%10e", -999. ) 
+            for row in ocat:
+                row['ra'], row['dec']  = catalog.convertSexagesimalToRaDecDegrees(row['ra_s'], row['dec_s'])
+   
+    #Downsize catalog to only sources in our map
+    def inbounds( r, olon=olon, olat=olat ):
+        if limits[0] > limits[1]:
+            return (not (r[olon] > limits[1] and r[olon] < limits[0])) and r[olat] > limits[2] and r[olat] < limits[3]
+        elif limits[0] < 0.:
+            limits0 = limits[0]+360.
+            return (not (r[olon] > limits[1] and r[olon] < limits0)) and r[olat] > limits[2] and r[olat] < limits[3]
+        else:
+            return r[olon]> limits[0] and r[olon] < limits[1] and r[olat] > limits[2] and r[olat] < limits[3]
+    if limits != None:
+        #ocat = ocat.select( olon, lambda r: r > limits[0] and r < limits[1]) 
+        #ocat = ocat.select( olat, lambda r: r > limits[2] and r < limits[3]) 
+        ocat = ocat.select( None, inbounds )
+   
+    print "    Found %d %s sources within limits" % (len(ocat), catEntry['name'])
+    
+    j=0
+    for row in cat:
+        distOld = -1.
+        cosDec = numpy.cos(row[lat]*numpy.pi/180.)
+        n_associations = 0
+        closestRow = None
+        for orow in ocat:
+            dist =  (((orow[olon]-row[lon])*cosDec)**2 + (orow[olat]-row[lat])**2)**0.5
+            if dist <= diff:
+                if distOld == -1. or dist < distOld:
+                    #row['SUMSS_val'] = sumssFlux[i]
+                    #row['SUMSS_err'] = sumssErr[i]
+                    n_associations += 1
+                    if 'multiIDSelectionCriterion' in params and \
+                            params['multiIDSelectionCriterion'] != None:
+                        pass 
+                    else:
+                        closestRow = orow
+                    pass
+                if distOld != -1:
+                    print "    Found double association at ", row[lon], row[lat]
+                    n_associations += 1
+                else:
+                    j+=1
+                distOld = dist
+        if n_associations > 1 and 'noDoubles' in params and params['noDoubles']:
+            print "discarding association at", row[lon], row[lat]
+            n_associations = 0
+            closestRow = None
+
+        if 'cols' in catEntry.keys():
+            for col in catEntry['cols']:
+                if closestRow == None:
+                    row["%s_%s" % (catEntry['name'], col)] = cat.cols["%s_%s" % (catEntry['name'], col)]['default']
+                else:
+                    row["%s_%s" % (catEntry['name'], col)] = closestRow[col]
+        if n_associations > 0:
+            try:
+                row['other_catalogs'] += catEntry['initial']
+            except:
+                row['other_catalogs']  = catEntry['initial']
+        else:
+            try:
+                row['other_catalogs'] += ''
+            except:
+                row['other_catalogs']  = ''
+        if n_associations > 1:
+            row['other_catalogs'] += str(n_associations)
+
+    print "    Found %d associations with %s" % (j, catEntry['name'])
+
+    cat.write("%s.pickle" % params['outputCatalogName'])
+    cat.writeASCII("%s.txt" % params['outputCatalogName'])
+    cat.writeRegionFile("%s.reg" % params['outputCatalogName'], raCol = lon, decCol= lat)
